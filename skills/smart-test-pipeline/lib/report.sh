@@ -2,7 +2,8 @@
 # lib/report.sh — Generate iteration and final reports
 set -euo pipefail
 
-source "$(dirname "$0")/colors.sh"
+REPORT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$REPORT_LIB_DIR/colors.sh"
 
 # Generate iteration report
 write_iteration_report() {
@@ -41,6 +42,7 @@ append_results() {
   local report_file="$data_dir/iterations/$iteration/report.md"
 
   local test_output="$data_dir/iterations/$iteration/test-output.txt"
+  local lint_output="$data_dir/iterations/$iteration/lint-output.txt"
   local ci_conclusions="$data_dir/iterations/$iteration/ci-conclusions.json"
   local git_stat="$data_dir/iterations/$iteration/git-stat.txt"
 
@@ -54,6 +56,18 @@ EOF
   if [[ -f "$test_output" ]]; then
     echo '```' >> "$report_file"
     tail -30 "$test_output" >> "$report_file"
+    echo '```' >> "$report_file"
+  else
+    echo "_Not run_" >> "$report_file"
+  fi
+
+  cat >> "$report_file" << 'EOF'
+
+### Lint
+EOF
+  if [[ -f "$lint_output" ]]; then
+    echo '```' >> "$report_file"
+    tail -30 "$lint_output" >> "$report_file"
     echo '```' >> "$report_file"
   else
     echo "_Not run_" >> "$report_file"

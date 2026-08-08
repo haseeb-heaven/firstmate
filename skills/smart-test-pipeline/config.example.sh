@@ -1,39 +1,29 @@
 #!/usr/bin/env bash
-# config.sh - Smart Test Pipeline configuration
-# Copy to ~/.config/greploop/config.sh and edit for your project
-set -euo pipefail
+# Operator-owned configuration. Loaded before built-in defaults; CLI flags win.
 
-# ── Loop control ──────────────────────────────────────────────
-MAX_ITERATIONS="${MAX_ITERATIONS:-10}"
-TARGET_SCORE="${TARGET_SCORE:-5}"        # Greptile confidence (1-5)
+MAX_ITERATIONS=10
+FIX_AGENT=pi
+WAIT_CI=true
+CI_TIMEOUT=3600
+REVIEW_BOTS="coderabbit greptile"
+TEST_CMD="python -m pytest --tb=short -q"
+LINT_CMD=""
+PRE_REVIEW_WAIT=30
+REVIEW_TIMEOUT=600
+POLL_INTERVAL=30
 
-# ── Fix agent ─────────────────────────────────────────────────
-# Which AI tool to spawn for fixes: pi, claude, codex, opencode
-FIX_AGENT="${FIX_AGENT:-pi}"
+# The pipeline refuses validation if auto/bwrap/sandbox-exec/docker cannot
+# provide a disposable boundary.
+VALIDATION_SANDBOX=auto
+AGENT_SANDBOX=auto
 
-# ── CI gating ─────────────────────────────────────────────────
-WAIT_CI="${WAIT_CI:-true}"
-CI_TIMEOUT="${CI_TIMEOUT:-3600}"         # seconds to wait for CI
+# Supporting files may be changed only when a finding exists and the path is
+# in one of these narrowly scoped test patterns.
+ALLOWED_SUPPORT_GLOBS="tests/** test/** **/test_*.py **/*_test.*"
 
-# ── Review bots ───────────────────────────────────────────────
-# Space-separated list of bots to trigger: coderabbit greptile
-REVIEW_BOTS="${REVIEW_BOTS:-coderabbit greptile}"
-
-# ── Local validation ──────────────────────────────────────────
-TEST_CMD="${TEST_CMD:-python -m pytest --tb=short -q}"
-LINT_CMD="${LINT_CMD:-}"                # empty = skip lint
-
-# ── Timing ────────────────────────────────────────────────────
-PRE_REVIEW_WAIT="${PRE_REVIEW_WAIT:-30}"    # wait before first poll
-REVIEW_TIMEOUT="${REVIEW_TIMEOUT:-600}"     # max wait for review comments
-POLL_INTERVAL="${POLL_INTERVAL:-30}"        # seconds between polls
-
-# ── Safety ────────────────────────────────────────────────────
-DRY_RUN="${DRY_RUN:-false}"
-FORCE_PUSH="${FORCE_PUSH:-false}"
-
-# ── Working directory ─────────────────────────────────────────
-# Auto-set by run.sh from the PR branch
-DATA_DIR="${DATA_DIR:-}"
-BRIEF_FILE="${BRIEF_FILE:-}"
-ITERATION="${ITERATION:-0}"
+# These are names only. Values are copied from the operator environment into
+# the model process; GitHub, SSH, cloud, and generic secret variables are not.
+PI_PROVIDER_ENV="ANTHROPIC_API_KEY OPENAI_API_KEY GOOGLE_API_KEY"
+CLAUDE_PROVIDER_ENV="ANTHROPIC_API_KEY CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEXAI"
+CODEX_PROVIDER_ENV="OPENAI_API_KEY OPENAI_BASE_URL"
+OPENCODE_PROVIDER_ENV="OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_GENERATIVE_AI_API_KEY"

@@ -2,7 +2,8 @@
 # lib/reviews.sh — Collect and parse review findings from PR comments
 set -euo pipefail
 
-source "$(dirname "$0")/colors.sh"
+REVIEWS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$REVIEWS_LIB_DIR/colors.sh"
 
 # Collect all unresolved review comments and parse into structured findings
 # Output: JSON array of {file, line, severity, description, source}
