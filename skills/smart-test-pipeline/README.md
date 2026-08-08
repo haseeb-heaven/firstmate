@@ -2,10 +2,10 @@
 
 ## What it does
 
-1. Triggers CodeRabbit (+ Greptile if installed) on the PR
+1. Triggers the configured review bots on the PR
 2. Waits for reviews, collects all unresolved findings
 3. Spawns a fix agent with structured brief
-4. Validates locally (tests, lint), pushes
+4. Validates locally (tests, lint), then pushes
 5. Waits for CI to pass
 6. Repeats until zero findings or max iterations hit
 
@@ -33,7 +33,7 @@ Copy `config.example.sh` to `config.sh` and edit. Key settings:
 | `WAIT_CI` | true | Wait for CI green before next iteration |
 | `CI_TIMEOUT` | 3600 | Seconds to wait for CI |
 | `REVIEW_BOTS` | coderabbit greptile | Bots to trigger |
-| `TEST_CMD` | `python -m pytest` | Local test command |
+| `TEST_CMD` | `python -m pytest --tb=short -q` | Local test command |
 | `LINT_CMD` | (empty) | Local lint command |
 
 ## Safety
@@ -46,4 +46,5 @@ Copy `config.example.sh` to `config.sh` and edit. Key settings:
 
 ## Output
 
-After each iteration: `data/iteration-N.md` with findings, fixes, test results, CI status.
+After each iteration, the pipeline writes `.greploop-data/iterations/<N>/report.md` with findings, fixes, test results, and CI status.
+The final report is `.greploop-data/report.md`.
