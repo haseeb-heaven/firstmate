@@ -114,7 +114,7 @@ spawn_fix_agent() {
       else
         echo -e "${RED}  ${CROSS} 'pi' command not found — install pi or use another agent${NC}"
         return 1
-      }
+      fi
       ;;
     claude)
       echo -e "${DIM}  Launching Claude Code with fix brief...${NC}"
@@ -127,7 +127,7 @@ spawn_fix_agent() {
       else
         echo -e "${RED}  ${CROSS} 'claude' command not found${NC}"
         return 1
-      }
+      fi
       ;;
     codex)
       echo -e "${DIM}  Launching Codex CLI with fix brief...${NC}"
@@ -140,7 +140,7 @@ spawn_fix_agent() {
       else
         echo -e "${RED}  ${CROSS} 'codex' command not found${NC}"
         return 1
-      }
+      fi
       ;;
     opencode)
       echo -e "${DIM}  Launching OpenCode with fix brief...${NC}"
@@ -153,7 +153,7 @@ spawn_fix_agent() {
       else
         echo -e "${RED}  ${CROSS} 'opencode' command not found${NC}"
         return 1
-      }
+      fi
       ;;
     *)
       echo -e "${RED}  ${CROSS} Unknown agent: $agent${NC}"
