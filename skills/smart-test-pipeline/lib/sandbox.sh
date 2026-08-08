@@ -34,6 +34,11 @@ agent_provider_hosts() {
   esac
 }
 
+sandbox_exec_works() {
+  command -v sandbox-exec >/dev/null 2>&1 || return 1
+  sandbox-exec -p '(version 1) (deny default) (allow process*)' true >/dev/null 2>&1
+}
+
 write_macos_profile() {
   local profile="$1" worktree="$2" agent_home="$3" temp_dir="$4" allow_network="$5" provider_hosts="$6"
   cat > "$profile" <<PROFILE
@@ -75,13 +80,13 @@ _run_sandboxed_impl() {
   case "$mode" in
     auto)
       if [[ "$allow_network" == "true" ]]; then
-        if command -v sandbox-exec >/dev/null 2>&1; then
+        if sandbox_exec_works; then
           mode=macos
         else
           echo "ERROR: no provider-aware network sandbox is available for the agent" >&2
           mode=none
         fi
-      elif command -v sandbox-exec >/dev/null 2>&1; then
+      elif sandbox_exec_works; then
         mode=macos
       elif command -v bwrap >/dev/null 2>&1; then
         mode=bwrap

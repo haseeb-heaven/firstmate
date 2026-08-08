@@ -14,7 +14,11 @@ run_tests() {
   local rc=0
   local saved_agent_env="${AGENT_ENV_ALLOWLIST-}"
   local snapshot_dir="$data_dir/iterations/$iteration/validation-worktree-tests"
-  prepare_validation_snapshot "$worktree_dir" "$snapshot_dir" || return 1
+  if ! prepare_validation_snapshot "$worktree_dir" "$snapshot_dir" 2>"$output_file"; then
+    printf 'Tests could not prepare a disposable snapshot.\n' >> "$output_file"
+    cp "$output_file" "$failure_file"
+    return 1
+  fi
   AGENT_ENV_ALLOWLIST=""
   export AGENT_ENV_ALLOWLIST
   run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$snapshot_dir" "$data_dir/sandbox-home" "$data_dir/sandbox-tmp" false \
@@ -39,7 +43,11 @@ run_lint() {
   local rc=0
   local saved_agent_env="${AGENT_ENV_ALLOWLIST-}"
   local snapshot_dir="$data_dir/iterations/$iteration/validation-worktree-lint"
-  prepare_validation_snapshot "$worktree_dir" "$snapshot_dir" || return 1
+  if ! prepare_validation_snapshot "$worktree_dir" "$snapshot_dir" 2>"$output_file"; then
+    printf 'Lint could not prepare a disposable snapshot.\n' >> "$output_file"
+    cp "$output_file" "$failure_file"
+    return 1
+  fi
   AGENT_ENV_ALLOWLIST=""
   export AGENT_ENV_ALLOWLIST
   run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$snapshot_dir" "$data_dir/sandbox-home" "$data_dir/sandbox-tmp" false \
@@ -56,7 +64,7 @@ run_lint() {
 }
 
 prepare_validation_snapshot() {
-  local source_dir="$1" snapshot_dir="$2" path parent
+  local source_dir="$1" snapshot_dir="$2" path lower_path parent
   rm -rf "$snapshot_dir"
   mkdir -p "$snapshot_dir"
   while IFS= read -r -d '' path; do
@@ -64,7 +72,8 @@ prepare_validation_snapshot() {
       echo "ERROR: Git control path in validation snapshot: $path" >&2
       return 1
     }
-    case "$path" in
+    lower_path=$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')
+    case "$lower_path" in
       .env|.env.*|*.key|*.pem|*.p12|*.pfx|*credentials*|*credential*)
         echo "ERROR: secret-like path refused in validation snapshot: $path" >&2
         return 1
@@ -76,7 +85,7 @@ prepare_validation_snapshot() {
     }
     parent="$snapshot_dir/$(dirname "$path")"
     mkdir -p "$parent"
-    cp -p -- "$source_dir/$path" "$snapshot_dir/$path"
+    cp -p "$source_dir/$path" "$snapshot_dir/$path"
   done < <(git -C "$source_dir" ls-files --cached --others --exclude-standard -z)
   git -C "$snapshot_dir" init -q
 }

@@ -6,6 +6,7 @@ SKILL_DIR="$(cd "$TEST_DIR/.." && pwd)"
 source "$SKILL_DIR/lib/agent.sh"
 source "$SKILL_DIR/lib/validate.sh"
 
+REAL_RUN_SANDBOXED=$(declare -f run_sandboxed)
 run_sandboxed() {
   local worktree="$2"
   shift 5
@@ -88,9 +89,31 @@ pass "sandbox adapter harness is isolated from production bypasses"
 mkdir -p "$TMP_ROOT/data/iterations/1" "$TMP_ROOT/data/sandbox-home" "$TMP_ROOT/data/sandbox-tmp"
 rm -f "$TMP_ROOT/repo/sandbox-marker"
 rm -f "$TMP_ROOT/repo/secret.txt"
+printf 'secret\n' > "$TMP_ROOT/repo/.ENV"
+if run_tests "$TMP_ROOT/repo" 'true' "$TMP_ROOT/data" 1; then
+  fail "case-variant secret path was copied"
+fi
+assert_contains "$TMP_ROOT/data/iterations/1/test-failures.txt" 'secret-like path refused' 'snapshot failures are persisted'
+rm -f "$TMP_ROOT/repo/.ENV"
 run_tests "$TMP_ROOT/repo" 'printf mutated >> app.txt' "$TMP_ROOT/data" 1 || fail "validation command failed"
 assert_not_contains "$TMP_ROOT/repo/app.txt" mutated "validation mutated the live worktree"
 pass "validation runs against a disposable snapshot"
+
+eval "$REAL_RUN_SANDBOXED"
+export AGENT_ENV_ALLOWLIST=""
+export GH_TOKEN="must-not-enter-sandbox"
+if run_sandboxed auto "$TMP_ROOT/repo" "$TMP_ROOT/home" "$TMP_ROOT/agent-tmp" false bash -c '
+  test -z "${GH_TOKEN:-}"; env_rc=$?
+  touch .git/sandbox-write 2>/dev/null; git_rc=$?
+  [[ $env_rc -eq 0 && $git_rc -ne 0 ]]
+'; then
+  pass "real sandbox filters credentials and Git control writes"
+else
+  sandbox_rc=$?
+  [[ "$sandbox_rc" -eq 125 ]] || fail "real sandbox boundary failed"
+  pass "real sandbox safely refused without a supported backend"
+fi
+unset GH_TOKEN AGENT_ENV_ALLOWLIST
 
 assert_contains "$SKILL_DIR/run.sh" 'BASH_SOURCE[0]' 'run.sh uses BASH_SOURCE paths'
 assert_contains "$SKILL_DIR/lib/loop.sh" 'BASH_SOURCE[0]' 'loop.sh uses BASH_SOURCE paths'
