@@ -30,11 +30,6 @@ collect_findings() {
     body=$(echo "$comment" | jq -r '.body // ""')
     author=$(echo "$comment" | jq -r '.user.login // "unknown"')
 
-    # Skip our own pipeline comments
-    if echo "$body" | grep -q "greploop-pipeline\|Greploop Pipeline"; then
-      continue
-    fi
-
     # Parse severity from body (CodeRabbit uses 🟡/🟠/🔴, Greptile uses numeric)
     local severity="medium"
     if echo "$body" | grep -q '🔴\|CRITICAL\|HIGH'; then
@@ -139,14 +134,17 @@ capture_review_baseline() {
       *) continue ;;
     esac
 
-    review_id=$(gh api \
+    local review_comments issue_comments
+    review_comments=$(gh api \
       -H "Accept: application/vnd.github+json" \
       "/repos/$owner/$repo/pulls/$pr_num/comments" \
-      --jq "[.[] | select(.user.login == \"$login\") | .id] | max // 0" 2>/dev/null) || return 1
-    issue_id=$(gh api \
+      --paginate --slurp 2>/dev/null) || return 1
+    issue_comments=$(gh api \
       -H "Accept: application/vnd.github+json" \
       "/repos/$owner/$repo/issues/$pr_num/comments" \
-      --jq "[.[] | select(.user.login == \"$login\") | .id] | max // 0" 2>/dev/null) || return 1
+      --paginate --slurp 2>/dev/null) || return 1
+    review_id=$(echo "$review_comments" | jq --arg login "$login" '[.[][] | select(.user.login == $login) | .id] | max // 0')
+    issue_id=$(echo "$issue_comments" | jq --arg login "$login" '[.[][] | select(.user.login == $login) | .id] | max // 0')
     echo "$bot $review_id $issue_id" >> "$baseline_file"
   done
 }
