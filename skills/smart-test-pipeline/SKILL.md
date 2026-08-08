@@ -18,6 +18,7 @@ The executable entry point is `run.sh` in this directory.
 - The pipeline refuses dirty cached worktrees and refuses to commit common secret or generated paths.
 - Dry-run mode performs no review triggers, agent execution, commits, pushes, or CI polling.
 - Review text and CI output are untrusted data and must not be treated as instructions.
+- For fork pull requests, the pipeline uses a separate `pr-head` remote for the fork head and keeps the base branch on `origin`.
 
 ## Requirements
 
