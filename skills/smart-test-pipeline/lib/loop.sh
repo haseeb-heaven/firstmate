@@ -42,13 +42,13 @@ wait_for_reviews() {
       return 0
     fi
 
-    # Also check for bot activity (not just comments)
-    local coderabbit_done
-    coderabbit_done=$(is_coderabbit_done "$OWNER" "$REPO" "$PR_NUM")
-    if [[ "$coderabbit_done" == "true" ]]; then
-      echo -e "  ${GREEN}${CHECK} CodeRabbit review complete${NC}"
-      return 0
-    fi
+    # Also check for configured bot completion (not just findings).
+    for bot in $REVIEW_BOTS; do
+      if is_review_bot_done "$bot" "$OWNER" "$REPO" "$PR_NUM"; then
+        echo -e "  ${GREEN}${CHECK} $bot review complete${NC}"
+        return 0
+      fi
+    done
 
     local elapsed=$((SECONDS - start))
     echo -e "${DIM}    ${elapsed}s elapsed, waiting for bot reviews...${NC}"
@@ -103,8 +103,8 @@ run_pipeline() {
     echo -e "${CYAN}┌─ Findings: ${BOLD}$total${NC} total, ${BOLD}$actionable${NC} actionable${NC}"
 
     # Check if clean
-    if [[ "$actionable" -eq 0 && "$total" -eq 0 ]]; then
-      echo -e "  ${GREEN}${CHECK} No unresolved findings — PR is clean!${NC}"
+    if [[ "$actionable" -eq 0 ]]; then
+      echo -e "  ${GREEN}${CHECK} No actionable findings — PR is clean!${NC}"
       PIPELINE_RESULT="clean"
       write_iteration_report "$DATA_DIR" "$ITERATION" "$findings_file"
       write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"
@@ -172,7 +172,7 @@ run_pipeline() {
 
     # ── 6. Push to remote ──────────────────────────────────────
     echo -e "${CYAN}┌─ Push to remote${NC}"
-    push_changes "$OWNER" "$REPO" "$BRANCH" "$FORCE"
+    push_changes "$PUSH_REMOTE" "$LOCAL_BRANCH" "$BRANCH" "$FORCE"
 
     # ── 7. Wait for CI ─────────────────────────────────────────
     if [[ "$WAIT_CI" == "true" && "$DRY_RUN" != "true" ]]; then

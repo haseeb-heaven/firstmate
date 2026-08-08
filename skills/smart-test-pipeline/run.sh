@@ -65,6 +65,11 @@ echo -e "  Wait CI: ${BOLD}$WAIT_CI${NC}"
 echo -e "  Dry run: ${BOLD}$DRY_RUN${NC}"
 echo ""
 
+if [[ "$DRY_RUN" == "true" ]]; then
+  echo -e "  ${YELLOW}${INFO} Dry run — no authentication, checkout, cache, review, agent, commit, push, or CI changes${NC}"
+  exit 0
+fi
+
 # ── Verify gh auth ────────────────────────────────────────────
 if ! gh auth status >/dev/null 2>&1; then
   echo -e "${RED}ERROR: not authenticated with gh. Run 'gh auth login'${NC}"
@@ -94,15 +99,29 @@ fi
 echo -e "${DIM}Fetching latest...${NC}"
 git fetch origin 2>/dev/null
 
-PR_BRANCH="$(gh pr view "$PR_NUM" --json headRefName --jq '.headRefName' 2>/dev/null)"
+PR_METADATA="$(gh pr view "$PR_NUM" --json headRefName,headRepositoryOwner,headRepository 2>/dev/null)"
+PR_BRANCH="$(echo "$PR_METADATA" | jq -r '.headRefName // empty')"
+HEAD_OWNER="$(echo "$PR_METADATA" | jq -r '.headRepositoryOwner.login // empty')"
+HEAD_REPO="$(echo "$PR_METADATA" | jq -r '.headRepository.name // empty')"
 if [[ -z "$PR_BRANCH" ]]; then
   echo -e "${RED}ERROR: could not read PR branch${NC}"
   exit 1
 fi
 
+PUSH_REMOTE=origin
+if [[ "$HEAD_OWNER/$HEAD_REPO" != "$REPO_FULL" ]]; then
+  PUSH_REMOTE=pr-head
+  if git remote get-url "$PUSH_REMOTE" >/dev/null 2>&1; then
+    git remote set-url "$PUSH_REMOTE" "https://github.com/$HEAD_OWNER/$HEAD_REPO.git"
+  else
+    git remote add "$PUSH_REMOTE" "https://github.com/$HEAD_OWNER/$HEAD_REPO.git"
+  fi
+  git fetch "$PUSH_REMOTE" 2>/dev/null
+fi
+
 echo -e "${DIM}Checking out branch ${YELLOW}$PR_BRANCH${NC}..."
-git checkout "$PR_BRANCH" 2>/dev/null || git checkout -b "$PR_BRANCH" "origin/$PR_BRANCH" 2>/dev/null
-git pull --ff-only origin "$PR_BRANCH" 2>/dev/null || {
+LOCAL_BRANCH="greploop/pr-$PR_NUM"
+git checkout -B "$LOCAL_BRANCH" "$PUSH_REMOTE/$PR_BRANCH" 2>/dev/null || {
   echo -e "${RED}ERROR: cached PR branch is not a fast-forward of origin; refresh the cache before retrying${NC}"
   exit 1
 }
@@ -121,7 +140,7 @@ if [[ -f "$SCRIPT_DIR/config.sh" ]]; then
   source "$SCRIPT_DIR/config.sh"
 fi
 
-export PR_URL OWNER REPO PR_NUM REPO_FULL BRANCH WORKTREE_DIR DATA_DIR
+export PR_URL OWNER REPO PR_NUM REPO_FULL BRANCH LOCAL_BRANCH WORKTREE_DIR DATA_DIR PUSH_REMOTE
 export MAX_ITERATIONS FIX_AGENT WAIT_CI DRY_RUN FORCE
 
 # ── Main loop ─────────────────────────────────────────────────

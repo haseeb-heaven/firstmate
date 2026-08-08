@@ -34,6 +34,6 @@ FORCE_PUSH="${FORCE_PUSH:-false}"
 
 # ── Working directory ─────────────────────────────────────────
 # Auto-set by run.sh from the PR branch
-DATA_DIR=""
-BRIEF_FILE=""
-ITERATION=0
+DATA_DIR="${DATA_DIR:-}"
+BRIEF_FILE="${BRIEF_FILE:-}"
+ITERATION="${ITERATION:-0}"

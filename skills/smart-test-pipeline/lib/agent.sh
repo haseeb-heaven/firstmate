@@ -88,7 +88,7 @@ FINDING
     echo '```' >> "$brief_file"
   fi
 
-  echo -e "  ${CHECK} Fix brief written: ${DIM}$brief_file${NC}"
+  echo -e "  ${CHECK} Fix brief written: ${DIM}$brief_file${NC}" >&2
   echo "$brief_file"
 }
 

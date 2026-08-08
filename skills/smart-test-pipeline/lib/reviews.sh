@@ -127,6 +127,25 @@ is_coderabbit_done() {
   fi
 }
 
+# Check if a configured review bot has completed its review.
+is_review_bot_done() {
+  local bot="$1" owner="$2" repo="$3" pr_num="$4"
+  local login
+  case "$bot" in
+    coderabbit) login="coderabbitai[bot]" ;;
+    greptile) login="greptile-apps[bot]" ;;
+    *) return 1 ;;
+  esac
+
+  local last_comment
+  last_comment=$(gh api \
+    -H "Accept: application/vnd.github+json" \
+    "/repos/$owner/$repo/pulls/$pr_num/comments" \
+    --jq "[.[] | select(.user.login == \"$login\") | .body] | last // \"\"" 2>/dev/null)
+
+  echo "$last_comment" | grep -Eiq "all comments resolved|no issues found|review complete|no findings|lgtm"
+}
+
 # Count actionable findings (exclude purely informational)
 count_actionable() {
   local findings="$1"

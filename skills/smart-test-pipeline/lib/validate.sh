@@ -66,14 +66,14 @@ run_lint() {
 
 # Push to remote
 push_changes() {
-  local owner="$1" repo="$2" branch="$3" force="$4"
+  local remote="$1" local_branch="$2" remote_branch="$3" force="$4"
 
-  echo -e "${CYAN}  ${ARROW} Pushing to origin/$branch...${NC}"
+  echo -e "${CYAN}  ${ARROW} Pushing to $remote/$remote_branch...${NC}"
 
   if [[ "$force" == "true" ]]; then
-    git push origin "$branch" --force-with-lease 2>&1
+    git push "$remote" "$local_branch:$remote_branch" --force-with-lease 2>&1
   else
-    git push origin "$branch" 2>&1
+    git push "$remote" "$local_branch:$remote_branch" 2>&1
   fi
 
   echo -e "  ${GREEN}${CHECK} Pushed${NC}"
