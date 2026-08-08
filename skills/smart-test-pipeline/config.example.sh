@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # config.sh - Smart Test Pipeline configuration
-# Copy from config.example.sh and edit for your project
+# Copy to ~/.config/greploop/config.sh and edit for your project
 set -euo pipefail
 
 # ── Loop control ──────────────────────────────────────────────

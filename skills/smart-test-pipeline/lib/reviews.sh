@@ -28,7 +28,7 @@ collect_findings() {
     path=$(echo "$comment" | jq -r '.path // "unknown"')
     line=$(echo "$comment" | jq -r '.line // "null"')
     body=$(echo "$comment" | jq -r '.body // ""')
-    author=$(echo "$comment" | jq -r '.user.login // "unknown"')
+    author=$(echo "$comment" | jq -r '.author // "unknown"')
 
     # Parse severity from body (CodeRabbit uses 🟡/🟠/🔴, Greptile uses numeric)
     local severity="medium"

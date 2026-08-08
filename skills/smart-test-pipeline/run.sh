@@ -132,11 +132,10 @@ BRANCH="$PR_BRANCH"
 # ── Setup data dir ────────────────────────────────────────────
 DATA_DIR="${DATA_DIR:-${TMPDIR:-/tmp}/greploop-data/$OWNER/$REPO/$PR_NUM}"
 
-# ── Source config (project-local overrides) ───────────────────
-# Do not source configuration from the PR checkout: the PR is untrusted code
-# and sourcing it would execute attacker-controlled shell commands.
-if [[ -f "$SCRIPT_DIR/config.sh" ]]; then
-  source "$SCRIPT_DIR/config.sh"
+# ── Source trusted operator config ────────────────────────────
+CONFIG_FILE="${GREPOLOOP_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/greploop/config.sh}"
+if [[ -f "$CONFIG_FILE" ]]; then
+  source "$CONFIG_FILE"
 fi
 
 mkdir -p "$DATA_DIR"

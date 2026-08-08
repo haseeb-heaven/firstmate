@@ -23,6 +23,6 @@ The executable entry point is `run.sh` in this directory.
 
 The operator must provide an authenticated GitHub CLI session and install `jq`, Git, the configured test tools, and the selected fix agent.
 
-Copy `config.example.sh` to `config.sh` beside `run.sh` for project-specific settings.
+Copy `config.example.sh` to `~/.config/greploop/config.sh` for operator settings, or set `GREPOLOOP_CONFIG` to a trusted config path.
 
 Run `./run.sh <PR_URL> --dry-run` to preview the run without changing the PR.

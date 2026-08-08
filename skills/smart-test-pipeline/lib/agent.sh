@@ -185,13 +185,51 @@ check_agent_changes() {
   fi
 }
 
+verify_agent_scope() {
+  local worktree_dir="$1" base_sha="$2" findings_file="$3"
+
+  cd "$worktree_dir"
+  local changed_paths allowed_paths unexpected_paths
+  changed_paths=$( {
+    git diff --name-only "$base_sha"..HEAD --
+    git diff --name-only
+    git ls-files --others --exclude-standard
+  } | sort -u )
+  allowed_paths=$(jq -r '.[].path // empty' "$findings_file" | sort -u)
+  unexpected_paths=$(comm -23 <(printf '%s\n' "$changed_paths") <(printf '%s\n' "$allowed_paths"))
+  if [[ -n "$unexpected_paths" ]]; then
+    echo -e "${RED}Refusing to commit paths outside the reported findings:${NC}" >&2
+    echo "$unexpected_paths" >&2
+    return 1
+  fi
+
+  local forbidden
+  forbidden=$(printf '%s\n' "$changed_paths" | grep -E '(^|/)(\.env($|\.)|.*\.(pem|key|p12|pfx|sqlite3?)$|node_modules/|\.venv/)' || true)
+  if [[ -n "$forbidden" ]]; then
+    echo -e "${RED}Refusing to use secret or generated paths:${NC}" >&2
+    echo "$forbidden" >&2
+    return 1
+  fi
+}
+
 # Commit the agent's fixes
 commit_fixes() {
-  local worktree_dir="$1" iteration="$2"
+  local worktree_dir="$1" iteration="$2" base_sha="$3" findings_file="$4"
 
   cd "$worktree_dir"
 
-  git add -A -- . ':(exclude).greploop-data' ':(exclude).greploop-data/**'
+  verify_agent_scope "$worktree_dir" "$base_sha" "$findings_file" || return 1
+
+  local changed_paths
+  changed_paths=$( {
+    git diff --name-only "$base_sha"..HEAD --
+    git diff --name-only
+    git ls-files --others --exclude-standard
+  } | sort -u)
+
+  if [[ -n "$changed_paths" ]]; then
+    git add --pathspec-from-file=- <<< "$changed_paths"
+  fi
 
   local forbidden
   forbidden=$(git diff --cached --name-only | grep -E '(^|/)(\.env($|\.)|.*\.(pem|key|p12|pfx|sqlite3?)$|node_modules/|\.venv/)' || true)

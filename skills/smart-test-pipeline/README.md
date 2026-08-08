@@ -25,7 +25,7 @@
 
 ## Configuration
 
-Copy `config.example.sh` to `config.sh` and edit. Key settings:
+Copy `config.example.sh` to `~/.config/greploop/config.sh` and edit, or set `GREPOLOOP_CONFIG` to a trusted config path. Key settings:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
