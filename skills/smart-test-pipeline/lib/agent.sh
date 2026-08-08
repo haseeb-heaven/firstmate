@@ -67,12 +67,13 @@ BRIEF
 run_restricted_agent() {
   local worktree_dir="$1" brief_file="$2" agent_command="$3"
   local agent_home="${TMPDIR:-/tmp}/greploop-agent-$PPID-$RANDOM"
-  local git_common_dir agent_data_dir sandbox_profile
+  local git_common_dir agent_data_dir agent_bin_dir sandbox_profile
   mkdir -m 700 -p "$agent_home/tmp" "$agent_home/gh"
   cd "$worktree_dir"
   git_common_dir=$(git rev-parse --git-common-dir)
   git_common_dir=$(cd "$git_common_dir" && pwd)
   agent_data_dir=$(cd "$(dirname "$brief_file")/../.." && pwd)
+  agent_bin_dir=$(cd "$(dirname "$agent_command")" && pwd)
   if ! command -v sandbox-exec >/dev/null 2>&1; then
     echo "No filesystem sandbox is available; refusing to run the fix agent" >&2
     return 1
@@ -80,9 +81,9 @@ run_restricted_agent() {
   sandbox_profile="(version 1)
 (deny default)
 (allow process*)
-(allow file-read*)
+(allow file-read* (subpath \"$worktree_dir\") (subpath \"$git_common_dir\") (subpath \"$agent_home\") (subpath \"$agent_data_dir\") (subpath \"$agent_bin_dir\") (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/usr\") (subpath \"/System\") (subpath \"/Library\") (subpath \"/opt\"))
 (allow file-write* (subpath \"$worktree_dir\") (subpath \"$git_common_dir\") (subpath \"$agent_home\"))
-(allow file-read* (subpath \"$agent_data_dir\"))"
+"
   sandbox-exec -p "$sandbox_profile" \
     env -i \
       PATH="$PATH" \

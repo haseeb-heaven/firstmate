@@ -99,12 +99,13 @@ fi
 echo -e "${DIM}Fetching latest...${NC}"
 git fetch origin 2>/dev/null
 
-PR_METADATA="$(gh pr view "$PR_NUM" --json headRefName,headRepositoryOwner,headRepository 2>/dev/null)"
+PR_METADATA="$(gh pr view "$PR_NUM" --json baseRefName,headRefName,headRepositoryOwner,headRepository 2>/dev/null)"
+BASE_BRANCH="$(echo "$PR_METADATA" | jq -r '.baseRefName // empty')"
 PR_BRANCH="$(echo "$PR_METADATA" | jq -r '.headRefName // empty')"
 HEAD_OWNER="$(echo "$PR_METADATA" | jq -r '.headRepositoryOwner.login // empty')"
 HEAD_REPO="$(echo "$PR_METADATA" | jq -r '.headRepository.name // empty')"
-if [[ -z "$PR_BRANCH" ]]; then
-  echo -e "${RED}ERROR: could not read PR branch${NC}"
+if [[ -z "$BASE_BRANCH" || -z "$PR_BRANCH" ]]; then
+  echo -e "${RED}ERROR: could not read PR branches${NC}"
   exit 1
 fi
 
@@ -118,6 +119,10 @@ if [[ "$HEAD_OWNER/$HEAD_REPO" != "$REPO_FULL" ]]; then
   fi
   git fetch "$PUSH_REMOTE" 2>/dev/null
 fi
+git fetch origin "$BASE_BRANCH" 2>/dev/null || {
+  echo -e "${RED}ERROR: could not fetch the PR base branch${NC}"
+  exit 1
+}
 
 echo -e "${DIM}Checking out branch ${YELLOW}$PR_BRANCH${NC}..."
 LOCAL_BRANCH="greploop/pr-$PR_NUM"
@@ -125,7 +130,7 @@ git checkout -B "$LOCAL_BRANCH" "$PUSH_REMOTE/$PR_BRANCH" 2>/dev/null || {
   echo -e "${RED}ERROR: cached PR branch is not a fast-forward of origin; refresh the cache before retrying${NC}"
   exit 1
 }
-REVIEW_BASE_SHA=$(git merge-base "$LOCAL_BRANCH" origin/main 2>/dev/null) || {
+REVIEW_BASE_SHA=$(git merge-base "$LOCAL_BRANCH" "origin/$BASE_BRANCH" 2>/dev/null) || {
   echo -e "${RED}ERROR: could not determine the review base${NC}"
   exit 1
 }
@@ -144,7 +149,7 @@ fi
 
 mkdir -p "$DATA_DIR"
 
-export PR_URL OWNER REPO PR_NUM REPO_FULL BRANCH LOCAL_BRANCH WORKTREE_DIR DATA_DIR PUSH_REMOTE REVIEW_BASE_SHA
+export PR_URL OWNER REPO PR_NUM REPO_FULL BRANCH BASE_BRANCH LOCAL_BRANCH WORKTREE_DIR DATA_DIR PUSH_REMOTE REVIEW_BASE_SHA
 export MAX_ITERATIONS FIX_AGENT WAIT_CI DRY_RUN FORCE
 
 # ── Main loop ─────────────────────────────────────────────────
