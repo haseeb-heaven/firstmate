@@ -132,18 +132,22 @@ capture_review_baseline() {
   : > "$baseline_file"
 
   for bot in $bots; do
-    local login latest_id
+    local login review_id issue_id
     case "$bot" in
       coderabbit) login="coderabbitai[bot]" ;;
       greptile) login="greptile-apps[bot]" ;;
       *) continue ;;
     esac
 
-    latest_id=$(gh api \
+    review_id=$(gh api \
       -H "Accept: application/vnd.github+json" \
       "/repos/$owner/$repo/pulls/$pr_num/comments" \
       --jq "[.[] | select(.user.login == \"$login\") | .id] | max // 0" 2>/dev/null) || return 1
-    echo "$bot $latest_id" >> "$baseline_file"
+    issue_id=$(gh api \
+      -H "Accept: application/vnd.github+json" \
+      "/repos/$owner/$repo/issues/$pr_num/comments" \
+      --jq "[.[] | select(.user.login == \"$login\") | .id] | max // 0" 2>/dev/null) || return 1
+    echo "$bot $review_id $issue_id" >> "$baseline_file"
   done
 }
 
@@ -157,17 +161,23 @@ is_review_bot_done() {
     *) return 1 ;;
   esac
 
-  local baseline
-  baseline=$(awk -v bot="$bot" '$1 == bot { print $2 }' "$baseline_file")
-  [[ -n "$baseline" ]] || return 1
+  local review_baseline issue_baseline
+  review_baseline=$(awk -v bot="$bot" '$1 == bot { print $2 }' "$baseline_file")
+  issue_baseline=$(awk -v bot="$bot" '$1 == bot { print $3 }' "$baseline_file")
+  [[ -n "$review_baseline" && -n "$issue_baseline" ]] || return 1
 
-  local last_comment
-  last_comment=$(gh api \
+  local last_review_comment last_issue_comment
+  last_review_comment=$(gh api \
     -H "Accept: application/vnd.github+json" \
     "/repos/$owner/$repo/pulls/$pr_num/comments" \
-    --jq "[.[] | select(.user.login == \"$login\" and .id > $baseline) | .body] | last // \"\"" 2>/dev/null)
+    --jq "[.[] | select(.user.login == \"$login\" and .id > $review_baseline) | .body] | last // \"\"" 2>/dev/null) || return 1
+  last_issue_comment=$(gh api \
+    -H "Accept: application/vnd.github+json" \
+    "/repos/$owner/$repo/issues/$pr_num/comments" \
+    --jq "[.[] | select(.user.login == \"$login\" and .id > $issue_baseline) | .body] | last // \"\"" 2>/dev/null) || return 1
 
-  echo "$last_comment" | grep -Eiq "all comments resolved|no issues found|review complete|no findings|lgtm"
+  printf '%s\n%s\n' "$last_review_comment" "$last_issue_comment" |
+    grep -Eiq "all comments resolved|no issues found|review complete|no findings|lgtm"
 }
 
 # Count actionable findings (exclude purely informational)
