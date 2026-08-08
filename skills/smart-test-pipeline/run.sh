@@ -125,6 +125,10 @@ git checkout -B "$LOCAL_BRANCH" "$PUSH_REMOTE/$PR_BRANCH" 2>/dev/null || {
   echo -e "${RED}ERROR: cached PR branch is not a fast-forward of origin; refresh the cache before retrying${NC}"
   exit 1
 }
+REVIEW_BASE_SHA=$(git merge-base "$LOCAL_BRANCH" origin/main 2>/dev/null) || {
+  echo -e "${RED}ERROR: could not determine the review base${NC}"
+  exit 1
+}
 
 WORKTREE_DIR="$PROJECT_DIR"
 BRANCH="$PR_BRANCH"
@@ -140,7 +144,7 @@ fi
 
 mkdir -p "$DATA_DIR"
 
-export PR_URL OWNER REPO PR_NUM REPO_FULL BRANCH LOCAL_BRANCH WORKTREE_DIR DATA_DIR PUSH_REMOTE
+export PR_URL OWNER REPO PR_NUM REPO_FULL BRANCH LOCAL_BRANCH WORKTREE_DIR DATA_DIR PUSH_REMOTE REVIEW_BASE_SHA
 export MAX_ITERATIONS FIX_AGENT WAIT_CI DRY_RUN FORCE
 
 # ── Main loop ─────────────────────────────────────────────────

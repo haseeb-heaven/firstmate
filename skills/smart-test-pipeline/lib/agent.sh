@@ -67,16 +67,31 @@ BRIEF
 run_restricted_agent() {
   local worktree_dir="$1" brief_file="$2" agent_command="$3"
   local agent_home="${TMPDIR:-/tmp}/greploop-agent-$PPID-$RANDOM"
+  local git_common_dir agent_data_dir sandbox_profile
   mkdir -m 700 -p "$agent_home/tmp" "$agent_home/gh"
   cd "$worktree_dir"
-  env -i \
-    PATH="$PATH" \
-    HOME="$agent_home" \
-    TMPDIR="$agent_home/tmp" \
-    GH_CONFIG_DIR="$agent_home/gh" \
-    GIT_CONFIG_NOSYSTEM=1 \
-    GIT_CONFIG_GLOBAL=/dev/null \
-    "$agent_command" --file "$brief_file"
+  git_common_dir=$(git rev-parse --git-common-dir)
+  git_common_dir=$(cd "$git_common_dir" && pwd)
+  agent_data_dir=$(cd "$(dirname "$brief_file")/../.." && pwd)
+  if ! command -v sandbox-exec >/dev/null 2>&1; then
+    echo "No filesystem sandbox is available; refusing to run the fix agent" >&2
+    return 1
+  fi
+  sandbox_profile="(version 1)
+(deny default)
+(allow process*)
+(allow file-read*)
+(allow file-write* (subpath \"$worktree_dir\") (subpath \"$git_common_dir\") (subpath \"$agent_home\"))
+(allow file-read* (subpath \"$agent_data_dir\"))"
+  sandbox-exec -p "$sandbox_profile" \
+    env -i \
+      PATH="$PATH" \
+      HOME="$agent_home" \
+      TMPDIR="$agent_home/tmp" \
+      GH_CONFIG_DIR="$agent_home/gh" \
+      GIT_CONFIG_NOSYSTEM=1 \
+      GIT_CONFIG_GLOBAL=/dev/null \
+      "$agent_command" --file "$brief_file"
 }
 
 # Spawn the fix agent
@@ -172,22 +187,25 @@ check_agent_changes() {
 }
 
 verify_agent_scope() {
-  local worktree_dir="$1" base_sha="$2" findings_file="$3"
+  local worktree_dir="$1" base_sha="$2" findings_file="$3" review_base_sha="$4"
 
   cd "$worktree_dir"
   local changed_paths allowed_paths unexpected_paths
-  local untracked_paths matched_paths
+  local untracked_paths
   changed_paths=$( {
     git diff --name-only "$base_sha"..HEAD --
     git diff --name-only
     git ls-files --others --exclude-standard
   } | sort -u )
-  allowed_paths=$(jq -r '.[].path // empty' "$findings_file" | sort -u)
+  allowed_paths=$( {
+    jq -r '.[].path // empty' "$findings_file"
+    git diff --name-only "$review_base_sha".."$base_sha" --
+  } | sort -u )
   untracked_paths=$(git ls-files --others --exclude-standard | sort -u)
-  matched_paths=$(comm -12 <(printf '%s\n' "$changed_paths") <(printf '%s\n' "$allowed_paths"))
-  if [[ -z "$matched_paths" && -n "$untracked_paths" ]]; then
-    echo -e "${RED}Refusing untracked changes without a matching review path:${NC}" >&2
-    echo "$untracked_paths" >&2
+  unexpected_paths=$(comm -23 <(printf '%s\n' "$changed_paths") <(printf '%s\n' "$allowed_paths"))
+  if [[ -n "$unexpected_paths" ]]; then
+    echo -e "${RED}Refusing changes outside the review change set:${NC}" >&2
+    echo "$unexpected_paths" >&2
     return 1
   fi
 
@@ -202,11 +220,11 @@ verify_agent_scope() {
 
 # Commit the agent's fixes
 commit_fixes() {
-  local worktree_dir="$1" iteration="$2" base_sha="$3" findings_file="$4"
+  local worktree_dir="$1" iteration="$2" base_sha="$3" findings_file="$4" review_base_sha="$5"
 
   cd "$worktree_dir"
 
-  verify_agent_scope "$worktree_dir" "$base_sha" "$findings_file" || return 1
+  verify_agent_scope "$worktree_dir" "$base_sha" "$findings_file" "$review_base_sha" || return 1
 
   local changed_paths
   changed_paths=$( {

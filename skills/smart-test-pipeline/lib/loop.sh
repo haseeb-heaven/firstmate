@@ -144,7 +144,7 @@ run_pipeline() {
       continue
     fi
 
-    if ! verify_agent_scope "$WORKTREE_DIR" "$agent_base_sha" "$findings_file"; then
+    if ! verify_agent_scope "$WORKTREE_DIR" "$agent_base_sha" "$findings_file" "$REVIEW_BASE_SHA"; then
       echo -e "  ${RED}${CROSS} Fix agent changed paths outside the reported findings${NC}"
       PIPELINE_RESULT="scope_blocked"
       write_iteration_report "$DATA_DIR" "$ITERATION" "$findings_file"
@@ -182,7 +182,7 @@ run_pipeline() {
 
     # ── 5. Commit only validated fixes ─────────────────────────
     if [[ "$(get_current_sha)" == "$agent_base_sha" ]]; then
-      if ! commit_fixes "$WORKTREE_DIR" "$ITERATION" "$agent_base_sha" "$findings_file"; then
+      if ! commit_fixes "$WORKTREE_DIR" "$ITERATION" "$agent_base_sha" "$findings_file" "$REVIEW_BASE_SHA"; then
         echo -e "  ${YELLOW}${WARN} Nothing to commit${NC}"
         continue
       fi
