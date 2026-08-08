@@ -13,9 +13,11 @@ run_tests() {
   echo -e "${CYAN}  ${PLAY} Running tests in a credential-free disposable sandbox${NC}"
   local rc=0
   local saved_agent_env="${AGENT_ENV_ALLOWLIST-}"
+  local snapshot_dir="$data_dir/iterations/$iteration/validation-worktree-tests"
+  prepare_validation_snapshot "$worktree_dir" "$snapshot_dir"
   AGENT_ENV_ALLOWLIST=""
   export AGENT_ENV_ALLOWLIST
-  run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$worktree_dir" "$data_dir/sandbox-home" "$data_dir/sandbox-tmp" false \
+  run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$snapshot_dir" "$data_dir/sandbox-home" "$data_dir/sandbox-tmp" false \
     bash -c "$test_cmd" >"$output_file" 2>&1 || rc=$?
   AGENT_ENV_ALLOWLIST="$saved_agent_env"
   export AGENT_ENV_ALLOWLIST
@@ -36,9 +38,11 @@ run_lint() {
   echo -e "${CYAN}  ${PLAY} Running lint in a credential-free disposable sandbox${NC}"
   local rc=0
   local saved_agent_env="${AGENT_ENV_ALLOWLIST-}"
+  local snapshot_dir="$data_dir/iterations/$iteration/validation-worktree-lint"
+  prepare_validation_snapshot "$worktree_dir" "$snapshot_dir"
   AGENT_ENV_ALLOWLIST=""
   export AGENT_ENV_ALLOWLIST
-  run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$worktree_dir" "$data_dir/sandbox-home" "$data_dir/sandbox-tmp" false \
+  run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$snapshot_dir" "$data_dir/sandbox-home" "$data_dir/sandbox-tmp" false \
     bash -c "$lint_cmd" >"$output_file" 2>&1 || rc=$?
   AGENT_ENV_ALLOWLIST="$saved_agent_env"
   export AGENT_ENV_ALLOWLIST
@@ -51,6 +55,15 @@ run_lint() {
   echo -e "${GREEN}  ${CHECK} Lint passed${NC}"
 }
 
+prepare_validation_snapshot() {
+  local source_dir="$1" snapshot_dir="$2"
+  rm -rf "$snapshot_dir"
+  mkdir -p "$snapshot_dir"
+  cp -a "$source_dir/." "$snapshot_dir/"
+  rm -rf "$snapshot_dir/.git"
+  git -C "$snapshot_dir" init -q
+}
+
 push_changes() {
   local remote="$1" worktree_dir="$2" remote_branch="$3" force="$4"
   local expected_sha="${5:-}" current_sha
@@ -60,6 +73,7 @@ push_changes() {
     return 1
   }
   git -C "$worktree_dir" diff --quiet || { echo "ERROR: unstaged changes before push" >&2; return 1; }
+  git -C "$worktree_dir" diff --cached --quiet || { echo "ERROR: staged changes before push" >&2; return 1; }
   local -a args=(push "$remote" "HEAD:$remote_branch")
   [[ "$force" == true ]] && args+=(--force-with-lease)
   if ! git -C "$worktree_dir" "${args[@]}"; then

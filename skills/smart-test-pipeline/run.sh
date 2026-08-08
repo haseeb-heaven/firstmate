@@ -98,6 +98,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
+mkdir -p "$DATA_DIR/iterations"
+
 echo -e "${CYAN}╔══════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║${NC}  ${YELLOW}Smart Test Pipeline — Guarded PR Review${NC}       ${CYAN}║${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════════════╝${NC}"

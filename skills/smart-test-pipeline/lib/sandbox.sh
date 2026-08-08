@@ -16,16 +16,26 @@ copy_allowed_env() {
 
 agent_provider_env() {
   case "$1" in
-    pi) printf '%s' "${PI_PROVIDER_ENV:-ANTHROPIC_API_KEY OPENAI_API_KEY GOOGLE_API_KEY}" ;;
-    claude) printf '%s' "${CLAUDE_PROVIDER_ENV:-ANTHROPIC_API_KEY CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEXAI}" ;;
-    codex) printf '%s' "${CODEX_PROVIDER_ENV:-OPENAI_API_KEY OPENAI_BASE_URL}" ;;
-    opencode) printf '%s' "${OPENCODE_PROVIDER_ENV:-OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_GENERATIVE_AI_API_KEY}" ;;
+    pi) printf '%s' "${PI_PROVIDER_ENV:-ANTHROPIC_API_KEY}" ;;
+    claude) printf '%s' "${CLAUDE_PROVIDER_ENV:-ANTHROPIC_API_KEY}" ;;
+    codex) printf '%s' "${CODEX_PROVIDER_ENV:-OPENAI_API_KEY}" ;;
+    opencode) printf '%s' "${OPENCODE_PROVIDER_ENV:-OPENAI_API_KEY}" ;;
+    *) return 1 ;;
+  esac
+}
+
+agent_provider_hosts() {
+  case "$1" in
+    pi) printf '%s' "${PI_PROVIDER_HOSTS:-api.anthropic.com}" ;;
+    claude) printf '%s' "${CLAUDE_PROVIDER_HOSTS:-api.anthropic.com}" ;;
+    codex) printf '%s' "${CODEX_PROVIDER_HOSTS:-api.openai.com}" ;;
+    opencode) printf '%s' "${OPENCODE_PROVIDER_HOSTS:-api.openai.com}" ;;
     *) return 1 ;;
   esac
 }
 
 write_macos_profile() {
-  local profile="$1" worktree="$2" agent_home="$3" temp_dir="$4" allow_network="$5"
+  local profile="$1" worktree="$2" agent_home="$3" temp_dir="$4" allow_network="$5" provider_hosts="$6"
   cat > "$profile" <<PROFILE
 (version 1)
 (deny default)
@@ -43,7 +53,11 @@ write_macos_profile() {
 (deny file-write* (subpath "$worktree/.git/hooks"))
 PROFILE
   if [[ "$allow_network" == "true" ]]; then
-    printf '%s\n' '(allow network-outbound)' >> "$profile"
+    local host
+    for host in $provider_hosts; do
+      [[ "$host" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "ERROR: invalid provider host: $host" >&2; return 1; }
+      printf '(allow network-outbound (remote tcp "%s:443"))\n' "$host" >> "$profile"
+    done
   fi
 }
 
@@ -51,6 +65,7 @@ _run_sandboxed_impl() {
   local mode="$1" worktree="$2" home_dir="$3" temp_dir="$4" allow_network="$5"
   shift 5
   local command=("$@")
+  local provider_hosts="${AGENT_PROVIDER_HOSTS:-}"
   local path_value="${PATH:-/usr/bin:/bin}"
   local -a clean_env=(env -i "PATH=$path_value" "HOME=$home_dir" "PWD=$worktree"
     "GIT_CONFIG_NOSYSTEM=1" "GIT_CONFIG_GLOBAL=/dev/null" "GIT_CONFIG_SYSTEM=/dev/null"
@@ -75,10 +90,11 @@ _run_sandboxed_impl() {
   case "$mode" in
     macos)
       local profile="$temp_dir/sandbox.sb"
-      write_macos_profile "$profile" "$worktree" "$home_dir" "$temp_dir" "$allow_network"
+      write_macos_profile "$profile" "$worktree" "$home_dir" "$temp_dir" "$allow_network" "$provider_hosts"
       sandbox-exec -f "$profile" -- "${clean_env[@]}" "${command[@]}"
       ;;
     bwrap)
+      [[ "$allow_network" != "true" ]] || { echo "ERROR: bwrap cannot enforce provider-only egress; refusing networked agent" >&2; return 125; }
       local -a args=(--die-with-parent --new-session --unshare-pid --unshare-ipc --unshare-uts
         --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /sbin /sbin
         --ro-bind /lib /lib --proc /proc --dev /dev --tmpfs /tmp
@@ -91,17 +107,18 @@ _run_sandboxed_impl() {
       "${clean_env[@]}" bwrap "${args[@]}" -- "${command[@]}"
       ;;
     docker)
-      local image="${SANDBOX_IMAGE:-alpine:3.20}"
+      local image="${SANDBOX_IMAGE:-}"
+      [[ -n "$image" ]] || { echo "ERROR: SANDBOX_IMAGE must name a compatible image containing bash and the requested command" >&2; return 125; }
       local network_arg=--network=none
-      [[ "$allow_network" == "true" ]] && network_arg="--network=host"
+      [[ "$allow_network" != "true" ]] || { echo "ERROR: Docker cannot enforce provider-only egress; refusing networked agent" >&2; return 125; }
       local -a docker_env=()
       while IFS= read -r -d '' item; do docker_env+=(--env "$item"); done < <(copy_allowed_env "${AGENT_ENV_ALLOWLIST:-}")
       local -a git_mount=()
       [[ -e "$worktree/.git" ]] && git_mount+=(--mount "type=bind,src=$worktree/.git,dst=$worktree/.git,readonly")
-      docker run --rm --user "$(id -u):$(id -g)" "$network_arg" "${docker_env[@]}" "${git_mount[@]}" \
-        --read-only --tmpfs /tmp --mount "type=bind,src=$worktree,dst=$worktree" \
+      docker run --rm --user "$(id -u):$(id -g)" "$network_arg" "${docker_env[@]}" \
+        --read-only --tmpfs /tmp --mount "type=bind,src=$worktree,dst=$worktree" "${git_mount[@]}" \
         --mount "type=bind,src=$home_dir,dst=$home_dir" --mount "type=bind,src=$temp_dir,dst=$temp_dir" \
-        -w "$worktree" "$image" sh -c 'exec "$@"' sh "${command[@]}"
+        -w "$worktree" "$image" bash -c 'exec "$@"' bash "${command[@]}"
       ;;
     none)
       echo "ERROR: no disposable sandbox backend is available" >&2

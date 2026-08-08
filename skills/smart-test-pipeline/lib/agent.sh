@@ -64,6 +64,12 @@ spawn_fix_agent() {
   local worktree_dir="$1" brief_file="$2" agent="$3" home_dir="$4" temp_dir="$5"
   command -v "$agent" >/dev/null 2>&1 || { echo "ERROR: '$agent' is not installed" >&2; return 1; }
   AGENT_ENV_ALLOWLIST="$(agent_provider_env "$agent")"
+  [[ "$(wc -w <<<"$AGENT_ENV_ALLOWLIST")" -eq 1 ]] || {
+    echo "ERROR: exactly one provider credential/environment selection is required for $agent" >&2
+    return 1
+  }
+  AGENT_PROVIDER_HOSTS="$(agent_provider_hosts "$agent")"
+  export AGENT_PROVIDER_HOSTS
   export AGENT_ENV_ALLOWLIST
   local -a argv=()
   while IFS= read -r -d '' arg; do argv+=("$arg"); done < <(agent_command "$agent" "$brief_file")

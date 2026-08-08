@@ -126,6 +126,14 @@ run_pipeline() {
       if ! validate_scope "$WORKTREE_DIR" "$agent_base_sha" "$findings_file" "$allowed_file"; then
         PIPELINE_RESULT="scope_blocked"; write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"; return 1
       fi
+      if ! git -C "$WORKTREE_DIR" diff --cached --quiet; then
+        echo "ERROR: agent-created commit left staged changes" >&2
+        PIPELINE_RESULT="scope_blocked"; write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"; return 1
+      fi
+    fi
+
+    if ! validate_scope "$WORKTREE_DIR" "$agent_base_sha" "$findings_file" "$allowed_file"; then
+      PIPELINE_RESULT="scope_blocked"; write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"; return 1
     fi
 
     require_pr_open "$OWNER" "$REPO" "$PR_NUM"

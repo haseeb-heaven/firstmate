@@ -77,7 +77,12 @@ mkdir -p "$TMP_ROOT/home" "$TMP_ROOT/agent-tmp"
 unset GH_TOKEN GITHUB_TOKEN AWS_SECRET_ACCESS_KEY
 if PIPELINE_TEST_MODE=true run_sandboxed auto "$TMP_ROOT/repo" "$TMP_ROOT/home" "$TMP_ROOT/agent-tmp" false bash -lc 'test -z "${GH_TOKEN:-}" && touch sandbox-marker'; then
   [[ -f "$TMP_ROOT/repo/sandbox-marker" ]] || fail "sandbox could not write only to the worktree"
-  pass "credential-free sandbox smoke test passes"
+pass "credential-free sandbox smoke test passes"
+
+mkdir -p "$TMP_ROOT/data/iterations/1" "$TMP_ROOT/data/sandbox-home" "$TMP_ROOT/data/sandbox-tmp"
+PIPELINE_TEST_MODE=true run_tests "$TMP_ROOT/repo" 'printf mutated >> app.txt' "$TMP_ROOT/data" 1 || fail "validation command failed"
+assert_not_contains "$TMP_ROOT/repo/app.txt" mutated "validation mutated the live worktree"
+pass "validation runs against a disposable snapshot"
 else
   pass "sandbox backend safely refused under the host test policy"
 fi
@@ -116,6 +121,9 @@ assert_contains "$SKILL_DIR/lib/agent.sh" 'ci-failures.md' 'CI failures are fed 
 assert_contains "$SKILL_DIR/lib/sandbox.sh" 'deny file-write* (subpath "$worktree/.git")' 'agent sandbox denies Git control writes'
 assert_contains "$SKILL_DIR/lib/sandbox.sh" 'type=bind,src=$worktree/.git' 'container sandbox protects the worktree Git file'
 assert_contains "$SKILL_DIR/lib/validate.sh" 'AGENT_ENV_ALLOWLIST=""' 'validation strips model credentials'
+assert_contains "$SKILL_DIR/lib/validate.sh" 'diff --cached --quiet' 'push rejects staged changes'
+assert_contains "$SKILL_DIR/lib/sandbox.sh" 'SANDBOX_IMAGE must name a compatible image' 'Docker requires an explicit compatible image'
+assert_contains "$SKILL_DIR/lib/sandbox.sh" 'remote tcp' 'agent egress is provider-host constrained'
 pass "failure, state-isolation, PR-state, and prompt-injection regressions are covered"
 
 echo "all smart-test-pipeline regression tests passed"
