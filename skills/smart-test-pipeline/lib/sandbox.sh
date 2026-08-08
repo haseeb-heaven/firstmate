@@ -72,17 +72,23 @@ _run_sandboxed_impl() {
     "GIT_TERMINAL_PROMPT=0" "GIT_SSH_COMMAND=ssh -oIdentityAgent=none -oIdentitiesOnly=yes")
   while IFS= read -r -d '' item; do clean_env+=("$item"); done < <(copy_allowed_env "${AGENT_ENV_ALLOWLIST:-}")
 
-  if [[ "${PIPELINE_TEST_MODE:-false}" == "true" ]]; then
-    "${clean_env[@]}" "${command[@]}"
-    return $?
-  fi
-
   case "$mode" in
     auto)
-      if command -v sandbox-exec >/dev/null 2>&1; then mode=macos
-      elif command -v bwrap >/dev/null 2>&1; then mode=bwrap
-      elif command -v docker >/dev/null 2>&1; then mode=docker
-      else mode=none
+      if [[ "$allow_network" == "true" ]]; then
+        if command -v sandbox-exec >/dev/null 2>&1; then
+          mode=macos
+        else
+          echo "ERROR: no provider-aware network sandbox is available for the agent" >&2
+          mode=none
+        fi
+      elif command -v sandbox-exec >/dev/null 2>&1; then
+        mode=macos
+      elif command -v bwrap >/dev/null 2>&1; then
+        mode=bwrap
+      elif command -v docker >/dev/null 2>&1; then
+        mode=docker
+      else
+        mode=none
       fi
       ;;
   esac

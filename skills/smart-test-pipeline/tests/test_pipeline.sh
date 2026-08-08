@@ -6,6 +6,12 @@ SKILL_DIR="$(cd "$TEST_DIR/.." && pwd)"
 source "$SKILL_DIR/lib/agent.sh"
 source "$SKILL_DIR/lib/validate.sh"
 
+run_sandboxed() {
+  local worktree="$2"
+  shift 5
+  (cd "$worktree" && "$@")
+}
+
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/smart-pipeline-tests.XXXXXX")"
 cleanup() { rm -rf "$TMP_ROOT"; }
 trap cleanup EXIT
@@ -68,24 +74,23 @@ for agent in pi claude codex opencode; do
     opencode) OPENCODE_PROVIDER_ENV=CAPTURE_FILE ;;
   esac
   export PI_PROVIDER_ENV CLAUDE_PROVIDER_ENV CODEX_PROVIDER_ENV OPENCODE_PROVIDER_ENV
-  PIPELINE_TEST_MODE=true AGENT_SANDBOX=auto spawn_fix_agent "$TMP_ROOT/repo" "$TMP_ROOT/findings.json" "$agent" "$TMP_ROOT/home" "$TMP_ROOT/agent-tmp" || fail "$agent adapter failed"
+  spawn_fix_agent "$TMP_ROOT/repo" "$TMP_ROOT/findings.json" "$agent" "$TMP_ROOT/home" "$TMP_ROOT/agent-tmp" || fail "$agent adapter failed"
   assert_not_contains "$CAPTURE_FILE" "--file" "$agent adapter uses the removed generic --file flag"
 done
 pass "all agent adapters use non-generic prompt syntax and no GitHub credentials"
 
 mkdir -p "$TMP_ROOT/home" "$TMP_ROOT/agent-tmp"
 unset GH_TOKEN GITHUB_TOKEN AWS_SECRET_ACCESS_KEY
-if PIPELINE_TEST_MODE=true run_sandboxed auto "$TMP_ROOT/repo" "$TMP_ROOT/home" "$TMP_ROOT/agent-tmp" false bash -lc 'test -z "${GH_TOKEN:-}" && touch sandbox-marker'; then
-  [[ -f "$TMP_ROOT/repo/sandbox-marker" ]] || fail "sandbox could not write only to the worktree"
-pass "credential-free sandbox smoke test passes"
+run_sandboxed auto "$TMP_ROOT/repo" "$TMP_ROOT/home" "$TMP_ROOT/agent-tmp" false bash -lc 'test -z "${GH_TOKEN:-}" && touch sandbox-marker'
+[[ -f "$TMP_ROOT/repo/sandbox-marker" ]] || fail "sandbox stub could not write to the worktree"
+pass "sandbox adapter harness is isolated from production bypasses"
 
 mkdir -p "$TMP_ROOT/data/iterations/1" "$TMP_ROOT/data/sandbox-home" "$TMP_ROOT/data/sandbox-tmp"
-PIPELINE_TEST_MODE=true run_tests "$TMP_ROOT/repo" 'printf mutated >> app.txt' "$TMP_ROOT/data" 1 || fail "validation command failed"
+rm -f "$TMP_ROOT/repo/sandbox-marker"
+rm -f "$TMP_ROOT/repo/secret.txt"
+run_tests "$TMP_ROOT/repo" 'printf mutated >> app.txt' "$TMP_ROOT/data" 1 || fail "validation command failed"
 assert_not_contains "$TMP_ROOT/repo/app.txt" mutated "validation mutated the live worktree"
 pass "validation runs against a disposable snapshot"
-else
-  pass "sandbox backend safely refused under the host test policy"
-fi
 
 assert_contains "$SKILL_DIR/run.sh" 'BASH_SOURCE[0]' 'run.sh uses BASH_SOURCE paths'
 assert_contains "$SKILL_DIR/lib/loop.sh" 'BASH_SOURCE[0]' 'loop.sh uses BASH_SOURCE paths'
