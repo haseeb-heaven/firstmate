@@ -164,15 +164,19 @@ is_review_bot_done() {
   issue_baseline=$(awk -v bot="$bot" '$1 == bot { print $3 }' "$baseline_file")
   [[ -n "$review_baseline" && -n "$issue_baseline" ]] || return 1
 
-  local last_review_comment last_issue_comment
-  last_review_comment=$(gh api \
+  local review_comments issue_comments
+  review_comments=$(gh api \
     -H "Accept: application/vnd.github+json" \
     "/repos/$owner/$repo/pulls/$pr_num/comments" \
-    --jq "[.[] | select(.user.login == \"$login\" and .id > $review_baseline) | .body] | last // \"\"" 2>/dev/null) || return 1
-  last_issue_comment=$(gh api \
+    --paginate --slurp 2>/dev/null) || return 1
+  issue_comments=$(gh api \
     -H "Accept: application/vnd.github+json" \
     "/repos/$owner/$repo/issues/$pr_num/comments" \
-    --jq "[.[] | select(.user.login == \"$login\" and .id > $issue_baseline) | .body] | last // \"\"" 2>/dev/null) || return 1
+    --paginate --slurp 2>/dev/null) || return 1
+
+  local last_review_comment last_issue_comment
+  last_review_comment=$(echo "$review_comments" | jq --arg login "$login" --argjson baseline "$review_baseline" '[.[][] | select(.user.login == $login and .id > $baseline) | .body] | last // ""')
+  last_issue_comment=$(echo "$issue_comments" | jq --arg login "$login" --argjson baseline "$issue_baseline" '[.[][] | select(.user.login == $login and .id > $baseline) | .body] | last // ""')
 
   printf '%s\n%s\n' "$last_review_comment" "$last_issue_comment" |
     grep -Eiq "all comments resolved|no issues found|review complete|no findings|lgtm"
