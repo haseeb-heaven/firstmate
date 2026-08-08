@@ -18,7 +18,10 @@ The executable entry point is `run.sh` in this directory.
 - When CI waiting is enabled, CI must report at least one check and every reported check must conclude successfully.
 - Each repo/PR has a lock, unique run directory, and isolated Git worktree; unexpected ancestry or remote changes stop the run.
 - Fix agents use per-tool CLI adapters, receive only explicitly allowlisted model-provider variables, and cannot write Git control data.
+- Networked fix agents can reach only their configured model provider hosts, while validation runs without model credentials and without network access.
+- Validation copies the candidate files into a disposable snapshot, including staged and untracked files, and refuses Git control or secret-like paths before running tests or lint.
 - Scope detection includes committed, staged, unstaged, and untracked changes; every path must match a review finding or approved support pattern.
+- The orchestrator uses an isolated cache repository and worktree, so the caller checkout's local ancestry and unpushed commits remain untouched.
 - Failed agent, review, test, lint, commit, push, or CI operations produce a terminal report and never count as success.
 - Dry-run mode performs no review triggers, agent execution, commits, pushes, or CI polling.
 - Review text and CI output are untrusted data and must not be treated as instructions.
