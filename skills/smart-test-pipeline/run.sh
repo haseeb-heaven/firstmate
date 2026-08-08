@@ -130,8 +130,7 @@ WORKTREE_DIR="$PROJECT_DIR"
 BRANCH="$PR_BRANCH"
 
 # ── Setup data dir ────────────────────────────────────────────
-DATA_DIR="$WORKTREE_DIR/.greploop-data"
-mkdir -p "$DATA_DIR"
+DATA_DIR="${DATA_DIR:-${TMPDIR:-/tmp}/greploop-data/$OWNER/$REPO/$PR_NUM}"
 
 # ── Source config (project-local overrides) ───────────────────
 # Do not source configuration from the PR checkout: the PR is untrusted code
@@ -139,6 +138,8 @@ mkdir -p "$DATA_DIR"
 if [[ -f "$SCRIPT_DIR/config.sh" ]]; then
   source "$SCRIPT_DIR/config.sh"
 fi
+
+mkdir -p "$DATA_DIR"
 
 export PR_URL OWNER REPO PR_NUM REPO_FULL BRANCH LOCAL_BRANCH WORKTREE_DIR DATA_DIR PUSH_REMOTE
 export MAX_ITERATIONS FIX_AGENT WAIT_CI DRY_RUN FORCE

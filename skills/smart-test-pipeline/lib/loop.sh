@@ -220,7 +220,7 @@ run_pipeline() {
   write_final_report "$DATA_DIR" "$MAX_ITERATIONS" "$PIPELINE_RESULT"
 
   echo -e "${YELLOW}${WARN} Max iterations ($MAX_ITERATIONS) reached${NC}"
-  return 0
+  return 1
 }
 
 # Run the pipeline

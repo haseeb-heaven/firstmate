@@ -180,10 +180,7 @@ is_review_bot_done() {
     grep -Eiq "all comments resolved|no issues found|review complete|no findings|lgtm"
 }
 
-# Count actionable findings (exclude purely informational)
 count_actionable() {
   local findings="$1"
-  echo "$findings" | jq '[.[] | select(
-    .body | test("BUG|CRITICAL|HIGH|Major|Major|fix|Fix|should|must|leak|error|Error|fail|Fail|regression|Regression"; "i")
-  )] | length'
+  echo "$findings" | jq 'length'
 }

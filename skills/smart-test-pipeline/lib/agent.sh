@@ -191,8 +191,7 @@ commit_fixes() {
 
   cd "$worktree_dir"
 
-  # Stage all changes, but reject common secret/artifact paths before commit.
-  git add -A
+  git add -A -- . ':(exclude).greploop-data' ':(exclude).greploop-data/**'
 
   local forbidden
   forbidden=$(git diff --cached --name-only | grep -E '(^|/)(\.env($|\.)|.*\.(pem|key|p12|pfx|sqlite3?)$|node_modules/|\.venv/)' || true)

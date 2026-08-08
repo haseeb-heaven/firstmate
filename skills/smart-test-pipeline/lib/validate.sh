@@ -87,27 +87,29 @@ wait_for_ci() {
 
   local start=$SECONDS
   while (( SECONDS - start < timeout )); do
-    # Check for in-progress or queued runs
-    local pending
-    pending=$(gh api \
+    local check_runs
+    check_runs=$(gh api \
       -H "Accept: application/vnd.github+json" \
       "/repos/$owner/$repo/commits/$sha/check-runs" \
-      --jq '[.check_runs[] | select(.status == "in_progress" or .status == "queued")] | length' 2>/dev/null) || {
+      --paginate --slurp 2>/dev/null) || {
       echo -e "${YELLOW}  ${WARN} Could not fetch check runs${NC}"
-      pending="1"
+      check_runs=""
     }
 
-    if [[ "$pending" == "0" || -z "$pending" ]]; then
+    if [[ -z "$check_runs" ]]; then
+      sleep 30
+      continue
+    fi
+
+    local pending
+    pending=$(echo "$check_runs" | jq '[.[].check_runs[] | select(.status == "in_progress" or .status == "queued")] | length')
+
+    if [[ "$pending" -eq 0 ]]; then
       echo -e "  ${GREEN}${CHECK} CI checks complete${NC}"
 
       # Get conclusions
       local conclusions
-      conclusions=$(gh api \
-        -H "Accept: application/vnd.github+json" \
-        "/repos/$owner/$repo/commits/$sha/check-runs" \
-        --jq '[.check_runs[] | select(.conclusion != null) | {name: .name, conclusion: .conclusion}]' 2>/dev/null) || {
-        conclusions="[]"
-      }
+      conclusions=$(echo "$check_runs" | jq '[.[].check_runs[] | select(.conclusion != null) | {name: .name, conclusion: .conclusion}]')
 
       echo "$conclusions" > "$data_dir/iterations/$iteration/ci-conclusions.json"
 
