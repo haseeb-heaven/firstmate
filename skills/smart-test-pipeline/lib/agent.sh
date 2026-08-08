@@ -64,6 +64,21 @@ BRIEF
   echo "$brief_file"
 }
 
+run_restricted_agent() {
+  local worktree_dir="$1" brief_file="$2" agent_command="$3"
+  local agent_home="${TMPDIR:-/tmp}/greploop-agent-$PPID-$RANDOM"
+  mkdir -m 700 -p "$agent_home/tmp" "$agent_home/gh"
+  cd "$worktree_dir"
+  env -i \
+    PATH="$PATH" \
+    HOME="$agent_home" \
+    TMPDIR="$agent_home/tmp" \
+    GH_CONFIG_DIR="$agent_home/gh" \
+    GIT_CONFIG_NOSYSTEM=1 \
+    GIT_CONFIG_GLOBAL=/dev/null \
+    "$agent_command" --file "$brief_file"
+}
+
 # Spawn the fix agent
 spawn_fix_agent() {
   local worktree_dir="$1" brief_file="$2" agent="$3"
@@ -78,7 +93,7 @@ spawn_fix_agent() {
       # Agent reads the brief and applies fixes
       cd "$worktree_dir"
       if command -v pi &>/dev/null; then
-        pi --file "$brief_file" 2>&1 || {
+        run_restricted_agent "$worktree_dir" "$brief_file" "$(command -v pi)" 2>&1 || {
           echo -e "${YELLOW}  ${WARN} Pi agent returned non-zero — checking for partial fixes${NC}"
           return 1
         }
@@ -91,7 +106,7 @@ spawn_fix_agent() {
       echo -e "${DIM}  Launching Claude Code with fix brief...${NC}"
       cd "$worktree_dir"
       if command -v claude &>/dev/null; then
-        claude --file "$brief_file" 2>&1 || {
+        run_restricted_agent "$worktree_dir" "$brief_file" "$(command -v claude)" 2>&1 || {
           echo -e "${YELLOW}  ${WARN} Claude returned non-zero — checking for partial fixes${NC}"
           return 1
         }
@@ -104,7 +119,7 @@ spawn_fix_agent() {
       echo -e "${DIM}  Launching Codex CLI with fix brief...${NC}"
       cd "$worktree_dir"
       if command -v codex &>/dev/null; then
-        codex --file "$brief_file" 2>&1 || {
+        run_restricted_agent "$worktree_dir" "$brief_file" "$(command -v codex)" 2>&1 || {
           echo -e "${YELLOW}  ${WARN} Codex returned non-zero${NC}"
           return 1
         }
@@ -117,7 +132,7 @@ spawn_fix_agent() {
       echo -e "${DIM}  Launching OpenCode with fix brief...${NC}"
       cd "$worktree_dir"
       if command -v opencode &>/dev/null; then
-        opencode --file "$brief_file" 2>&1 || {
+        run_restricted_agent "$worktree_dir" "$brief_file" "$(command -v opencode)" 2>&1 || {
           echo -e "${YELLOW}  ${WARN} OpenCode returned non-zero${NC}"
           return 1
         }
@@ -161,16 +176,18 @@ verify_agent_scope() {
 
   cd "$worktree_dir"
   local changed_paths allowed_paths unexpected_paths
+  local untracked_paths matched_paths
   changed_paths=$( {
     git diff --name-only "$base_sha"..HEAD --
     git diff --name-only
     git ls-files --others --exclude-standard
   } | sort -u )
   allowed_paths=$(jq -r '.[].path // empty' "$findings_file" | sort -u)
-  unexpected_paths=$(comm -23 <(printf '%s\n' "$changed_paths") <(printf '%s\n' "$allowed_paths"))
-  if [[ -n "$unexpected_paths" ]]; then
-    echo -e "${RED}Refusing to commit paths outside the reported findings:${NC}" >&2
-    echo "$unexpected_paths" >&2
+  untracked_paths=$(git ls-files --others --exclude-standard | sort -u)
+  matched_paths=$(comm -12 <(printf '%s\n' "$changed_paths") <(printf '%s\n' "$allowed_paths"))
+  if [[ -z "$matched_paths" && -n "$untracked_paths" ]]; then
+    echo -e "${RED}Refusing untracked changes without a matching review path:${NC}" >&2
+    echo "$untracked_paths" >&2
     return 1
   fi
 
