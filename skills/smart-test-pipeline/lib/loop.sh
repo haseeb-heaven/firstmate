@@ -146,9 +146,11 @@ run_pipeline() {
 
     if ! verify_agent_scope "$WORKTREE_DIR" "$agent_base_sha" "$findings_file"; then
       echo -e "  ${RED}${CROSS} Fix agent changed paths outside the reported findings${NC}"
+      PIPELINE_RESULT="scope_blocked"
       write_iteration_report "$DATA_DIR" "$ITERATION" "$findings_file"
       append_results "$DATA_DIR" "$ITERATION"
-      continue
+      write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"
+      return 1
     fi
 
     echo -e "${DIM}  Changes:${NC}"

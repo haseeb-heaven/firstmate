@@ -45,27 +45,18 @@ HEADER
     [[ -z "$finding" ]] && continue
     count=$((count + 1))
 
-    local path line severity body source
+    local path line severity source
     path=$(echo "$finding" | jq -r '.path // "unknown"')
     line=$(echo "$finding" | jq -r '.line // "N/A"')
     severity=$(echo "$finding" | jq -r '.severity // "medium"')
-    body=$(echo "$finding" | jq -r '.body // ""')
-    source=$(echo "$finding" | jq -r '.source // "unknown"')
-
-    # Truncate body to keep brief manageable
-    local short_body
-    short_body=$(echo "$body" | head -50)
+    source=$(echo "$finding" | jq -r '.source // "unknown"' | tr -cd '[:alnum:]_.@-')
 
     cat >> "$brief_file" << FINDING
 
 ### Finding $count ($severity) — $source
 - **File:** \`$path\`
 - **Line:** $line
-- **Description:**
-
-\`\`\`
-$short_body
-\`\`\`
+- **Description:** Inspect the referenced code and address the reported issue.
 
 FINDING
   done <<< "$(jq -c '.[]' "$findings_file")"
@@ -75,7 +66,7 @@ FINDING
     echo "" >> "$brief_file"
     echo "## CI Failures (prior iteration)" >> "$brief_file"
     echo "" >> "$brief_file"
-    cat "$ci_failures_file" >> "$brief_file"
+    echo "Local validation previously failed. Inspect the repository and run the configured checks." >> "$brief_file"
   fi
 
   # Add local test failures if any
@@ -84,9 +75,7 @@ FINDING
     echo "" >> "$brief_file"
     echo "## Local Test Failures" >> "$brief_file"
     echo "" >> "$brief_file"
-    echo '```' >> "$brief_file"
-    cat "$test_failures" >> "$brief_file"
-    echo '```' >> "$brief_file"
+    echo "Local tests previously failed. Inspect the repository and run the configured checks." >> "$brief_file"
   fi
 
   echo -e "  ${CHECK} Fix brief written: ${DIM}$brief_file${NC}" >&2
