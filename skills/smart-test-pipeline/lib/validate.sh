@@ -117,6 +117,12 @@ wait_for_ci() {
       non_success=$(echo "$conclusions" | jq '[.[] | select(.conclusion != "success")] | length')
       success=$(echo "$conclusions" | jq '[.[] | select(.conclusion == "success")] | length')
 
+      if [[ "$total" -eq 0 ]]; then
+        echo -e "${DIM}    No CI checks registered yet; continuing to poll...${NC}"
+        sleep 30
+        continue
+      fi
+
       echo -e "  ${INFO} CI results: ${GREEN}passed: $success${NC}  ${RED}non-success: $non_success${NC}"
 
       # Show failed checks

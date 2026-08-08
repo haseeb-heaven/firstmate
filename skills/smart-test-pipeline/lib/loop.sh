@@ -10,6 +10,7 @@ source "$(dirname "$0")/validate.sh"
 source "$(dirname "$0")/report.sh"
 
 PIPELINE_RESULT="clean"
+CI_BLOCKED=false
 
 # ── Trigger review bots ────────────────────────────────────────
 trigger_reviews() {
@@ -35,20 +36,32 @@ wait_for_reviews() {
 
   while (( SECONDS - start < REVIEW_TIMEOUT )); do
     local comments
-    comments=$(get_unresolved_comments "$OWNER" "$REPO" "$PR_NUM" | jq '[.[] | select(.author == "coderabbitai[bot]" or .author == "greptile-apps[bot]")] | length') || return 1
+    comments=$(get_unresolved_comments "$OWNER" "$REPO" "$PR_NUM") || return 1
 
-    if [[ "$comments" -gt 0 ]]; then
-      echo -e "  ${GREEN}${CHECK} $comments unresolved bot comments found${NC}"
-      return 0
-    fi
-
-    # Also check for configured bot completion (not just findings).
+    local all_done=true total_comments=0
     for bot in $REVIEW_BOTS; do
-      if is_review_bot_done "$bot" "$OWNER" "$REPO" "$PR_NUM"; then
-        echo -e "  ${GREEN}${CHECK} $bot review complete${NC}"
-        return 0
+      local login bot_comments
+      case "$bot" in
+        coderabbit) login="coderabbitai[bot]" ;;
+        greptile) login="greptile-apps[bot]" ;;
+        *) login="" ;;
+      esac
+
+      bot_comments=0
+      if [[ -n "$login" ]]; then
+        bot_comments=$(echo "$comments" | jq --arg login "$login" '[.[] | select(.author == $login)] | length')
+        total_comments=$((total_comments + bot_comments))
+      fi
+
+      if [[ "$bot_comments" -eq 0 ]] && ! is_review_bot_done "$bot" "$OWNER" "$REPO" "$PR_NUM"; then
+        all_done=false
       fi
     done
+
+    if [[ "$all_done" == "true" ]]; then
+      echo -e "  ${GREEN}${CHECK} All configured reviews complete ($total_comments unresolved bot comments)${NC}"
+      return 0
+    fi
 
     local elapsed=$((SECONDS - start))
     echo -e "${DIM}    ${elapsed}s elapsed, waiting for bot reviews...${NC}"
@@ -78,6 +91,10 @@ run_pipeline() {
 
   # Step 0: Initial review trigger
   trigger_reviews
+  wait_for_reviews || {
+    PIPELINE_RESULT="review_blocked"
+    return 1
+  }
 
   for (( ITERATION=1; ITERATION<=MAX_ITERATIONS; ITERATION++ )); do
     echo ""
@@ -104,6 +121,14 @@ run_pipeline() {
 
     # Check if clean
     if [[ "$actionable" -eq 0 ]]; then
+      if [[ "$CI_BLOCKED" == "true" ]]; then
+        echo -e "  ${RED}${CROSS} No actionable findings, but CI is not green${NC}"
+        PIPELINE_RESULT="ci_blocked"
+        write_iteration_report "$DATA_DIR" "$ITERATION" "$findings_file"
+        write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"
+        return 1
+      fi
+
       echo -e "  ${GREEN}${CHECK} No actionable findings — PR is clean!${NC}"
       PIPELINE_RESULT="clean"
       write_iteration_report "$DATA_DIR" "$ITERATION" "$findings_file"
@@ -181,8 +206,10 @@ run_pipeline() {
       sha=$(get_current_sha)
 
       if ! wait_for_ci "$OWNER" "$REPO" "$sha" "$CI_TIMEOUT" "$DATA_DIR" "$ITERATION"; then
+        CI_BLOCKED=true
         echo -e "  ${RED}${CROSS} CI has failures — fix agent will address next iteration${NC}"
       else
+        CI_BLOCKED=false
         echo -e "  ${GREEN}${CHECK} CI green!${NC}"
       fi
     fi
@@ -199,7 +226,11 @@ run_pipeline() {
   done
 
   # ── Max iterations reached ───────────────────────────────────
-  PIPELINE_RESULT="max_iterations"
+  if [[ "$CI_BLOCKED" == "true" ]]; then
+    PIPELINE_RESULT="ci_blocked"
+  else
+    PIPELINE_RESULT="max_iterations"
+  fi
   write_final_report "$DATA_DIR" "$MAX_ITERATIONS" "$PIPELINE_RESULT"
 
   echo -e "${YELLOW}${WARN} Max iterations ($MAX_ITERATIONS) reached${NC}"
