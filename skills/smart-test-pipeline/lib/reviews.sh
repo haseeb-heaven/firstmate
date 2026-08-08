@@ -127,9 +127,29 @@ is_coderabbit_done() {
   fi
 }
 
+capture_review_baseline() {
+  local owner="$1" repo="$2" pr_num="$3" bots="$4" baseline_file="$5"
+  : > "$baseline_file"
+
+  for bot in $bots; do
+    local login latest_id
+    case "$bot" in
+      coderabbit) login="coderabbitai[bot]" ;;
+      greptile) login="greptile-apps[bot]" ;;
+      *) continue ;;
+    esac
+
+    latest_id=$(gh api \
+      -H "Accept: application/vnd.github+json" \
+      "/repos/$owner/$repo/pulls/$pr_num/comments" \
+      --jq "[.[] | select(.user.login == \"$login\") | .id] | max // 0" 2>/dev/null) || return 1
+    echo "$bot $latest_id" >> "$baseline_file"
+  done
+}
+
 # Check if a configured review bot has completed its review.
 is_review_bot_done() {
-  local bot="$1" owner="$2" repo="$3" pr_num="$4"
+  local bot="$1" owner="$2" repo="$3" pr_num="$4" baseline_file="$5"
   local login
   case "$bot" in
     coderabbit) login="coderabbitai[bot]" ;;
@@ -137,11 +157,15 @@ is_review_bot_done() {
     *) return 1 ;;
   esac
 
+  local baseline
+  baseline=$(awk -v bot="$bot" '$1 == bot { print $2 }' "$baseline_file")
+  [[ -n "$baseline" ]] || return 1
+
   local last_comment
   last_comment=$(gh api \
     -H "Accept: application/vnd.github+json" \
     "/repos/$owner/$repo/pulls/$pr_num/comments" \
-    --jq "[.[] | select(.user.login == \"$login\") | .body] | last // \"\"" 2>/dev/null)
+    --jq "[.[] | select(.user.login == \"$login\" and .id > $baseline) | .body] | last // \"\"" 2>/dev/null)
 
   echo "$last_comment" | grep -Eiq "all comments resolved|no issues found|review complete|no findings|lgtm"
 }

@@ -14,6 +14,8 @@ CI_BLOCKED=false
 
 # ── Trigger review bots ────────────────────────────────────────
 trigger_reviews() {
+  REVIEW_BASELINE_FILE="$DATA_DIR/review-baseline.txt"
+  capture_review_baseline "$OWNER" "$REPO" "$PR_NUM" "$REVIEW_BOTS" "$REVIEW_BASELINE_FILE"
   echo -e "${CYAN}┌─ Triggering review bots${NC}"
 
   for bot in $REVIEW_BOTS; do
@@ -37,7 +39,7 @@ wait_for_reviews() {
   while (( SECONDS - start < REVIEW_TIMEOUT )); do
     local all_done=true
     for bot in $REVIEW_BOTS; do
-      if ! is_review_bot_done "$bot" "$OWNER" "$REPO" "$PR_NUM"; then
+      if ! is_review_bot_done "$bot" "$OWNER" "$REPO" "$PR_NUM" "$REVIEW_BASELINE_FILE"; then
         all_done=false
       fi
     done
