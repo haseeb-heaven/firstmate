@@ -36,9 +36,10 @@ get_unresolved_comments() {
 
   echo "$response" | jq '[.data.repository.pullRequest.reviewThreads.nodes[]
     | select(.isResolved == false and .isOutdated == false)
-    | .comments.nodes[0]
+    | . as $thread
+    | $thread.comments.nodes[0]
     | select(. != null)
-    | {id: (.id // "thread"), path: (.path // "unknown"), line: (.line // .originalLine), body, author: (.author.login // "unknown")} ]'
+    | {id: ($thread.id // "thread"), path: (.path // "unknown"), line: (.line // .originalLine), body, author: (.author.login // "unknown")} ]'
 }
 
 # Get review comments with more detail (path, line, body, author)
