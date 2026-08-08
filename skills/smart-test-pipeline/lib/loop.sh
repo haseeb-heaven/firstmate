@@ -35,31 +35,15 @@ wait_for_reviews() {
   local start=$SECONDS
 
   while (( SECONDS - start < REVIEW_TIMEOUT )); do
-    local comments
-    comments=$(get_unresolved_comments "$OWNER" "$REPO" "$PR_NUM") || return 1
-
-    local all_done=true total_comments=0
+    local all_done=true
     for bot in $REVIEW_BOTS; do
-      local login bot_comments
-      case "$bot" in
-        coderabbit) login="coderabbitai[bot]" ;;
-        greptile) login="greptile-apps[bot]" ;;
-        *) login="" ;;
-      esac
-
-      bot_comments=0
-      if [[ -n "$login" ]]; then
-        bot_comments=$(echo "$comments" | jq --arg login "$login" '[.[] | select(.author == $login)] | length')
-        total_comments=$((total_comments + bot_comments))
-      fi
-
-      if [[ "$bot_comments" -eq 0 ]] && ! is_review_bot_done "$bot" "$OWNER" "$REPO" "$PR_NUM"; then
+      if ! is_review_bot_done "$bot" "$OWNER" "$REPO" "$PR_NUM"; then
         all_done=false
       fi
     done
 
     if [[ "$all_done" == "true" ]]; then
-      echo -e "  ${GREEN}${CHECK} All configured reviews complete ($total_comments unresolved bot comments)${NC}"
+      echo -e "  ${GREEN}${CHECK} All configured reviews complete${NC}"
       return 0
     fi
 

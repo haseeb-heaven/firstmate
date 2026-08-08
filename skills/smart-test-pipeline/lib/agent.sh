@@ -8,7 +8,8 @@ source "$(dirname "$0")/colors.sh"
 generate_fix_brief() {
   local data_dir="$1" iteration="$2" findings_file="$3"
   local brief_file="$data_dir/iterations/$iteration/fix-brief.md"
-  local ci_failures_file="$data_dir/iterations/$iteration/ci-failures.md"
+  local previous_iteration=$((iteration - 1))
+  local ci_failures_file="$data_dir/iterations/$previous_iteration/ci-failures.md"
 
   cat > "$brief_file" << 'HEADER'
 # Fix Brief — Greploop Pipeline
@@ -78,7 +79,7 @@ FINDING
   fi
 
   # Add local test failures if any
-  local test_failures="$data_dir/iterations/$iteration/test-failures.txt"
+  local test_failures="$data_dir/iterations/$previous_iteration/test-failures.txt"
   if [[ -f "$test_failures" && -s "$test_failures" ]]; then
     echo "" >> "$brief_file"
     echo "## Local Test Failures" >> "$brief_file"
