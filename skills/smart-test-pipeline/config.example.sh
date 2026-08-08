@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# config.sh — Greploop Pipeline configuration
+# config.sh - Smart Test Pipeline configuration
 # Copy from config.example.sh and edit for your project
 set -euo pipefail
 

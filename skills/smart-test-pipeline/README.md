@@ -1,18 +1,19 @@
-# Greploop Pipeline — Autonomous PR Review & Fix Loop
+# Smart Test Pipeline - Guarded PR Review and Fix Loop
 
 ## What it does
 
-1. Triggers the configured review bots on the PR
-2. Waits for reviews, collects all unresolved findings
-3. Spawns a fix agent with structured brief
-4. Validates locally (tests, lint), then pushes
-5. Waits for CI to pass
-6. Repeats until zero findings or max iterations hit
+1. Captures a baseline and triggers the configured review bots on the PR.
+2. Waits for each configured bot to publish a completion signal.
+3. Collects unresolved, non-outdated review threads through GitHub GraphQL.
+4. Spawns a fix agent with a structured brief containing review and CI findings.
+5. Runs the configured tests and optional lint before committing or pushing changes.
+6. Optionally waits for at least one completed, successful CI check.
+7. Repeats until no unresolved findings remain or the maximum iteration count is reached.
 
 ## Quick start
 
 ```bash
-# Basic — point at a PR URL
+# Basic - point at a PR URL
 ./run.sh "https://github.com/owner/repo/pull/123"
 
 # With options
@@ -38,13 +39,11 @@ Copy `config.example.sh` to `config.sh` and edit. Key settings:
 
 ## Safety
 
-- Never merges the PR (captain approval required)
-- Never forces pushes without `--force`
-- Stops on max iterations with full report
-- Dry-run mode: `--dry-run`
-- Each iteration = separate commit (easy to revert)
+The pipeline does not merge pull requests, and its complete safety contract is documented in [SKILL.md](SKILL.md).
+Use `--force` only when a force-with-lease push is explicitly intended.
+The pipeline stops at the configured iteration limit and writes a full report.
+Use `--dry-run` to preview the run without review triggers, agent execution, commits, pushes, or CI polling.
 
 ## Output
 
-After each iteration, the pipeline writes `.greploop-data/iterations/<N>/report.md` with findings, fixes, test results, and CI status.
-The final report is `.greploop-data/report.md`.
+By default, the pipeline writes iteration reports under `${TMPDIR:-/tmp}/greploop-data/<owner>/<repo>/<pr>/iterations/<N>/` and the final report at the corresponding `report.md` path.
