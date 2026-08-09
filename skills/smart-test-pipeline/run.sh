@@ -96,6 +96,12 @@ if [[ ! "$RAW_REPO" =~ ^[A-Za-z0-9._-]+$ || ${#RAW_REPO} -gt 100 ]]; then
   exit 2
 fi
 
+# GitHub treats /pull/1 and /pull/001 as the same PR. Canonicalize the decimal
+# before deriving any lock, cache, run, or API identity so serialization cannot
+# be bypassed with leading zeroes.
+PR_NUM="$(printf '%s' "$PR_NUM" | sed 's/^0*//')"
+[[ -n "$PR_NUM" && "$PR_NUM" != 0 ]] || { echo "ERROR: PR number must be a positive decimal integer" >&2; exit 2; }
+
 OWNER="$(printf '%s' "$RAW_OWNER" | tr '[:upper:]' '[:lower:]')"
 REPO="$(printf '%s' "$RAW_REPO" | tr '[:upper:]' '[:lower:]')"
 REPO_FULL="$OWNER/$REPO"
@@ -183,16 +189,11 @@ mkdir -p -m 700 "$REPO_ROOT/locks" "$RUN_ROOT"
 if mkdir -m 700 "$LOCK_DIR" 2>/dev/null; then
   LOCK_ACQUIRED=true
 else
-  # A process that just won mkdir may not have atomically published owner metadata yet.
-  # Give that publication a bounded grace period before considering an ownerless lock stale.
   for _ in 1 2 3 4 5; do
     [[ -f "$LOCK_DIR/owner" ]] && break
     sleep 1
   done
-
-  lock_pid=""
-  lock_repo=""
-  lock_pr=""
+  lock_pid=""; lock_repo=""; lock_pr=""
   if [[ -f "$LOCK_DIR/owner" ]]; then
     lock_pid=$(awk -F= '$1 == "pid" { print $2 }' "$LOCK_DIR/owner")
     lock_repo=$(awk -F= '$1 == "repo" { print tolower($2) }' "$LOCK_DIR/owner")
@@ -250,15 +251,15 @@ git -C "$REPOSITORY_DIR" config user.name "Smart Test Pipeline"
 git -C "$REPOSITORY_DIR" config user.email "smart-test-pipeline@localhost"
 git -C "$REPOSITORY_DIR" config credential.helper '!gh auth git-credential'
 
-git -C "$REPOSITORY_DIR" fetch --no-tags origin "$BASE_BRANCH" >/dev/null
+git -C "$REPOSITORY_DIR" fetch --no-tags -- origin "$BASE_BRANCH" >/dev/null
 HEAD_REPO_KEY="$(printf '%s/%s' "$HEAD_OWNER" "$HEAD_REPO" | tr '[:upper:]' '[:lower:]')"
 if [[ "$HEAD_REPO_KEY" != "$REPO_FULL" ]]; then
   git -C "$REPOSITORY_DIR" remote add pr-head "https://github.com/$HEAD_OWNER/$HEAD_REPO.git"
-  git -C "$REPOSITORY_DIR" fetch --no-tags pr-head "$PR_BRANCH" >/dev/null
+  git -C "$REPOSITORY_DIR" fetch --no-tags -- pr-head "$PR_BRANCH" >/dev/null
   PUSH_REMOTE="pr-head"
 else
   PUSH_REMOTE="origin"
-  git -C "$REPOSITORY_DIR" fetch --no-tags origin "$PR_BRANCH" >/dev/null
+  git -C "$REPOSITORY_DIR" fetch --no-tags -- origin "$PR_BRANCH" >/dev/null
 fi
 
 REMOTE_HEAD="$(git -C "$REPOSITORY_DIR" rev-parse "$PUSH_REMOTE/$PR_BRANCH")"
