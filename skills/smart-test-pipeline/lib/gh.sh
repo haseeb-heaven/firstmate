@@ -17,7 +17,7 @@ get_unresolved_comments() {
           pullRequest(number:$number) {
             reviewThreads(first:100, after:$after) {
               pageInfo { hasNextPage endCursor }
-              nodes { id isResolved isOutdated comments(first:1) {
+              nodes { id isResolved isOutdated comments(first:100) {
                 nodes { databaseId body path line originalLine author { login } }
               } }
             }
@@ -35,7 +35,7 @@ get_unresolved_comments() {
     [[ -n "$cursor" && "$cursor" != null ]] || return 1
   done
   jq '[.[] | select(.isResolved == false and .isOutdated == false) | . as $thread
-    | $thread.comments.nodes[0] | select(. != null)
+    | $thread.comments.nodes[-1] | select(. != null)
     | {id: ($thread.id // "thread"), path: (.path // "unknown"), line: (.line // .originalLine), body: (.body // ""), author: (.author.login // "unknown")} ]' <<<"$nodes"
 }
 

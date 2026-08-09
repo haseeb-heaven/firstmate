@@ -33,10 +33,11 @@ Copy `config.example.sh` to `config.sh` beside `run.sh`, or set `SMART_TEST_CONF
 | `FIX_AGENT` | pi | Agent to spawn for fixes (pi, claude, codex, opencode) |
 | `WAIT_CI` | true | Wait for CI green before next iteration |
 | `CI_TIMEOUT` | 3600 | Seconds to wait for CI |
+| `AGENT_TIMEOUT` | 1800 | Seconds before a stalled fix agent is terminated |
 | `REVIEW_BOTS` | coderabbit greptile | Bots to trigger |
 | `TEST_CMD` | `python -m pytest --tb=short -q` | Local test command |
 | `LINT_CMD` | (empty) | Local lint command |
-| `VALIDATION_SANDBOX` | auto | Disposable backend: `sandbox-exec`, `bwrap`, or Docker |
+| `VALIDATION_SANDBOX` | auto | Disposable backend: `macos` (`sandbox-exec`), `bwrap`, or Docker |
 | `AGENT_SANDBOX` | auto | Disposable agent backend |
 | `ALLOWED_SUPPORT_GLOBS` | test patterns | Narrow patterns for reviewed supporting files |
 

@@ -43,6 +43,12 @@ wait_for_reviews() {
   return 1
 }
 
+pr_head_matches_worktree() {
+  local remote_head
+  remote_head=$(gh api "/repos/$OWNER/$REPO/pulls/$PR_NUM" --jq '.head.sha') || return 1
+  [[ "$remote_head" == "$(get_current_sha)" ]]
+}
+
 ci_findings() {
   local previous="$DATA_DIR/iterations/$((ITERATION - 1))/ci-failures.md"
   [[ -s "$previous" ]] || return 0
@@ -95,6 +101,13 @@ run_pipeline() {
     local actionable
     actionable=$(count_actionable "$findings")
     if [[ "$actionable" -eq 0 ]]; then
+      if [[ "$CI_BLOCKED" != true ]] && ! pr_head_matches_worktree; then
+        echo "ERROR: PR head changed after validation; refusing to report a stale clean result" >&2
+        PIPELINE_RESULT="head_changed"
+        write_iteration_report "$DATA_DIR" "$ITERATION" "$findings_file"
+        write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"
+        return 1
+      fi
       if [[ "$CI_BLOCKED" == true ]]; then
         PIPELINE_RESULT="ci_blocked"
       else
@@ -131,7 +144,7 @@ run_pipeline() {
     if [[ "$validation_failed" == true ]]; then
       write_iteration_report "$DATA_DIR" "$ITERATION" "$findings_file"
       append_results "$DATA_DIR" "$ITERATION"
-      CI_BLOCKED=false
+      CI_BLOCKED=true
       continue
     fi
 
@@ -170,6 +183,24 @@ run_pipeline() {
     trigger_reviews || { PIPELINE_RESULT="review_blocked"; write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"; return 1; }
     wait_for_reviews || { PIPELINE_RESULT="review_blocked"; write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"; return 1; }
   done
+
+  # The final review is collected after the last fix pass. A clean response
+  # here is a valid success, not an iteration-limit failure.
+  local final_dir="$DATA_DIR/iterations/$MAX_ITERATIONS" final_findings final_findings_file
+  mkdir -p "$final_dir"
+  final_findings=$(collect_findings "$OWNER" "$REPO" "$PR_NUM" "$final_dir") || {
+    PIPELINE_RESULT="review_blocked"
+    write_final_report "$DATA_DIR" "$MAX_ITERATIONS" "$PIPELINE_RESULT"
+    return 1
+  }
+  final_findings_file="$final_dir/final-findings.json"
+  jq '.' <<<"$final_findings" > "$final_findings_file"
+  if [[ "$CI_BLOCKED" != true ]] && [[ "$(count_actionable "$final_findings")" -eq 0 ]] && pr_head_matches_worktree; then
+    write_iteration_report "$DATA_DIR" "$MAX_ITERATIONS" "$final_findings_file"
+    PIPELINE_RESULT="clean"
+    write_final_report "$DATA_DIR" "$MAX_ITERATIONS" "$PIPELINE_RESULT"
+    return 0
+  fi
 
   PIPELINE_RESULT="$([[ "$CI_BLOCKED" == true ]] && echo ci_blocked || echo max_iterations)"
   write_final_report "$DATA_DIR" "$MAX_ITERATIONS" "$PIPELINE_RESULT"

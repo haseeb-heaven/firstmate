@@ -111,9 +111,11 @@ prepare_validation_snapshot() {
   done < <(git -C "$source_dir" ls-files --cached --others --exclude-standard -z)
   git -C "$snapshot_dir" init -q
   git -C "$snapshot_dir" add -A
-  GIT_AUTHOR_NAME=validation GIT_AUTHOR_EMAIL=validation@localhost \
+  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    GIT_AUTHOR_NAME=validation GIT_AUTHOR_EMAIL=validation@localhost \
     GIT_COMMITTER_NAME=validation GIT_COMMITTER_EMAIL=validation@localhost \
-    git -C "$snapshot_dir" commit -qm "credential-free validation snapshot"
+    git -c core.hooksPath=/dev/null -c commit.gpgSign=false \
+      -C "$snapshot_dir" commit --no-verify -qm "credential-free validation snapshot"
 }
 
 push_changes() {
@@ -153,14 +155,15 @@ wait_for_ci() {
     local total pending
     total=$(jq '[.[].check_runs[]] | length' <<<"$check_runs")
     pending=$(jq '[.[].check_runs[] | select(.status != "completed")] | length' <<<"$check_runs")
-    local status_total status_pending
-    status_total=$(jq '[.[][]] | length' <<<"$statuses")
-    status_pending=$(jq '[.[][] | select(.state == "pending")] | length' <<<"$statuses")
+    local latest_statuses status_total status_pending
+    latest_statuses=$(jq '[.[][]] | sort_by(.context, .created_at) | group_by(.context) | map(last)' <<<"$statuses")
+    status_total=$(jq 'length' <<<"$latest_statuses")
+    status_pending=$(jq '[.[] | select(.state == "pending")] | length' <<<"$latest_statuses")
     total=$((total + status_total)); pending=$((pending + status_pending))
     if [[ "$total" -eq 0 ]]; then sleep 5; continue; fi
     if [[ "$pending" -gt 0 ]]; then sleep 30; continue; fi
     jq '[.[].check_runs[] | {name, conclusion, details_url: .html_url}]' <<<"$check_runs" > "$conclusions_file"
-    jq '[.[][] | {name: .context, conclusion: (if .state == "success" then "success" else .state end), details_url: .target_url}]' <<<"$statuses" > "$conclusions_file.statuses"
+    jq --argjson latest "$latest_statuses" '[ $latest[] | {name: .context, conclusion: (if .state == "success" then "success" else .state end), details_url: .target_url} ]' <<<"{}" > "$conclusions_file.statuses"
     jq -s '.[0] + .[1]' "$conclusions_file" "$conclusions_file.statuses" > "$conclusions_file.tmp"
     mv "$conclusions_file.tmp" "$conclusions_file"
     rm -f "$conclusions_file.statuses"

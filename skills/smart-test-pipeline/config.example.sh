@@ -5,6 +5,7 @@ MAX_ITERATIONS=10
 FIX_AGENT=pi
 WAIT_CI=true
 CI_TIMEOUT=3600
+AGENT_TIMEOUT=1800
 REVIEW_BOTS="coderabbit greptile"
 TEST_CMD="python -m pytest --tb=short -q"
 LINT_CMD=""

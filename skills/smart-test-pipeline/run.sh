@@ -21,6 +21,7 @@ fi
 : "${DRY_RUN:=false}"
 : "${FORCE_PUSH:=false}"
 : "${CI_TIMEOUT:=3600}"
+: "${AGENT_TIMEOUT:=1800}"
 : "${REVIEW_BOTS:=coderabbit greptile}"
 : "${TEST_CMD:=python -m pytest --tb=short -q}"
 : "${LINT_CMD:=}"
@@ -87,6 +88,7 @@ cleanup() {
   local rc=$?
   if [[ "${WORKTREE_CLEANUP:-false}" == true && "$rc" -eq 0 && -n "${WORKTREE_DIR:-}" && -d "$WORKTREE_DIR" && -d "${REPOSITORY_DIR:-}/.git" ]]; then
     git -C "$REPOSITORY_DIR" worktree remove --force "$WORKTREE_DIR" >/dev/null 2>&1 || true
+    rm -rf "$REPOSITORY_DIR"
   fi
   if [[ "${LOCK_ACQUIRED:-false}" == true && -n "${LOCK_DIR:-}" && -d "$LOCK_DIR" ]]; then
     rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
@@ -190,7 +192,7 @@ LOCAL_BRANCH="detached-pr-$PR_NUM-$RUN_ID"
 
 export PR_URL OWNER REPO PR_NUM REPO_FULL BRANCH LOCAL_BRANCH WORKTREE_DIR DATA_DIR PUSH_REMOTE
 export BASE_BRANCH BASE_SHA HEAD_SHA REPOSITORY_DIR RUN_ROOT RUN_ID
-export MAX_ITERATIONS FIX_AGENT WAIT_CI DRY_RUN FORCE_PUSH CI_TIMEOUT REVIEW_BOTS TEST_CMD LINT_CMD
+export MAX_ITERATIONS FIX_AGENT WAIT_CI DRY_RUN FORCE_PUSH CI_TIMEOUT AGENT_TIMEOUT REVIEW_BOTS TEST_CMD LINT_CMD
 export PRE_REVIEW_WAIT REVIEW_TIMEOUT POLL_INTERVAL ALLOWED_SUPPORT_GLOBS VALIDATION_SANDBOX AGENT_SANDBOX
 
 source "$SCRIPT_DIR/lib/loop.sh"
