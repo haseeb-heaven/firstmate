@@ -274,3 +274,81 @@ wait_for_ci() {
   printf '## CI Failures\n\n- CI wait timed out after %ss\n' "$timeout" > "$failures_file"
   return 1
 }
+
+# Generated/dependency directories are forbidden at any nesting depth, not only
+# when they occur at the repository root.
+path_is_forbidden() {
+  local path="$1" lower basename wrapped
+  lower=$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')
+  basename="${lower##*/}"
+  wrapped="/$lower/"
+  [[ "$lower" == .git || "$lower" == .git/* || "$lower" == */.git || "$lower" == */.git/* || "$lower" == .greploop-data/* ]] && return 0
+  case "$basename" in
+    .env|.env.*|*.pem|*.key|*.p12|*.pfx)
+      case "$basename" in
+        .env.example|.env.*.example) ;;
+        *) return 0 ;;
+      esac
+      ;;
+  esac
+  case "$wrapped" in
+    */node_modules/*|*/.venv/*|*/vendor/*|*/dist/*|*/build/*) return 0 ;;
+  esac
+  return 1
+}
+
+# Preflight every gitlink before the core copier descends. A checked-out
+# submodule must resolve to a repository rooted at that exact path and remain
+# physically beneath its parent validation source; symlink escapes are refused.
+if ! declare -F _smart_prior_copy_snapshot_repo >/dev/null 2>&1; then
+  eval "$(declare -f copy_snapshot_repo | sed '1s/copy_snapshot_repo/_smart_prior_copy_snapshot_repo/')"
+fi
+copy_snapshot_repo() {
+  local source_dir="$1" snapshot_dir="$2" include_untracked="$3"
+  local source_root path mode submodule_dir submodule_root
+  source_root=$(cd "$source_dir" && pwd -P) || return 1
+  while IFS= read -r -d '' path; do
+    mode=$(git -C "$source_dir" ls-files --stage -- "$path" | awk 'NR == 1 { print $1 }')
+    [[ "$mode" == 160000 ]] || continue
+    [[ -d "$source_dir/$path" ]] || {
+      echo "ERROR: checked-out submodule missing from validation snapshot: $path" >&2
+      return 1
+    }
+    submodule_dir=$(cd "$source_dir/$path" 2>/dev/null && pwd -P) || return 1
+    case "$submodule_dir" in
+      "$source_root"/*) ;;
+      *) echo "ERROR: submodule escapes validation source: $path" >&2; return 1 ;;
+    esac
+    submodule_root=$(git -C "$source_dir/$path" rev-parse --show-toplevel 2>/dev/null || true)
+    [[ -n "$submodule_root" ]] || {
+      echo "ERROR: submodule is not initialized in validation source: $path" >&2
+      return 1
+    }
+    submodule_root=$(cd "$submodule_root" 2>/dev/null && pwd -P) || submodule_root=""
+    [[ "$submodule_root" == "$submodule_dir" ]] || {
+      echo "ERROR: submodule is not initialized in validation source: $path" >&2
+      return 1
+    }
+  done < <(git -C "$source_dir" ls-files --cached -z)
+  _smart_prior_copy_snapshot_repo "$source_dir" "$snapshot_dir" "$include_untracked"
+}
+
+# Snapshot construction itself runs outside the validation sandbox, so every
+# Git command that can consult configuration or invoke filters is isolated from
+# host/system config. The new snapshot repository has no filter commands of its
+# own, so repository-controlled .gitattributes cannot activate host filters.
+prepare_validation_snapshot() {
+  local source_dir="$1" snapshot_dir="$2"
+  rm -rf "$snapshot_dir"
+  mkdir -p "$snapshot_dir"
+  copy_snapshot_repo "$source_dir" "$snapshot_dir" true || return 1
+  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    git -C "$snapshot_dir" init -q
+  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    git -C "$snapshot_dir" -c core.hooksPath=/dev/null add -A
+  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    GIT_AUTHOR_NAME=validation GIT_AUTHOR_EMAIL=validation@localhost \
+    GIT_COMMITTER_NAME=validation GIT_COMMITTER_EMAIL=validation@localhost \
+    git -c core.hooksPath=/dev/null -c commit.gpgSign=false \
+      -C "$snapshot_dir" commit --no-verify -qm "credential-free validation snapshot"
+}
