@@ -38,14 +38,34 @@ run_validation_captured() {
     echo "ERROR: VALIDATION_OUTPUT_LIMIT must be a positive integer" >&2
     return 2
   }
-  local fifo="${output_file}.pipe.$$" drain_pid rc=0
+  local fifo="${output_file}.pipe.$$" drain_pid rc=0 drain_stuck=false
   rm -f "$fifo"
   mkfifo "$fifo"
   bounded_output_drain "$fifo" "$output_file" "$limit" &
   drain_pid=$!
   "$@" > "$fifo" 2>&1 || rc=$?
-  wait "$drain_pid" || true
+
+  # The command runner is responsible for terminating its complete process
+  # group. Bound the drain wait as defense in depth so a leaked writer cannot
+  # keep the pipeline blocked forever.
+  local _
+  for _ in 1 2 3 4 5; do
+    kill -0 "$drain_pid" 2>/dev/null || break
+    sleep 1
+  done
+  if kill -0 "$drain_pid" 2>/dev/null; then
+    drain_stuck=true
+    kill -TERM "$drain_pid" 2>/dev/null || true
+    sleep 1
+    kill -KILL "$drain_pid" 2>/dev/null || true
+  fi
+  wait "$drain_pid" 2>/dev/null || true
   rm -f "$fifo"
+  if [[ "$drain_stuck" == true ]]; then
+    echo "ERROR: validation output drain remained open after process-group teardown" >&2
+    [[ "$rc" -ne 0 ]] && return "$rc"
+    return 124
+  fi
   return "$rc"
 }
 
@@ -120,27 +140,60 @@ run_lint() {
   echo -e "${GREEN}  ${CHECK} Lint passed${NC}"
 }
 
-run_validation_command() {
+run_validation_command() (
   local seconds="$1"; shift
-  local child watcher rc
+  local child watcher rc pgid shell_pgid
+  [[ "$seconds" =~ ^[1-9][0-9]*$ ]] || {
+    echo "ERROR: validation timeout must be a positive integer" >&2
+    return 2
+  }
+
+  # Monitor mode gives the background validation job its own process group,
+  # even when the command is a sourced shell function such as run_sandboxed.
+  # That lets timeout/cleanup terminate descendants recursively in one signal.
+  set -m
   "$@" &
   child=$!
+  set +m
+
+  pgid=$(ps -o pgid= -p "$child" 2>/dev/null | tr -d '[:space:]')
+  shell_pgid=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d '[:space:]')
+  if [[ ! "$pgid" =~ ^[1-9][0-9]*$ || "$pgid" == "$shell_pgid" ]]; then
+    echo "ERROR: unable to isolate validation process group safely" >&2
+    kill -TERM "$child" 2>/dev/null || true
+    wait "$child" 2>/dev/null || true
+    return 125
+  fi
+
+  terminate_validation_group() {
+    local signal="$1"
+    kill -"$signal" -- "-$pgid" 2>/dev/null || true
+  }
+
   (
     trap 'exit 0' TERM INT
     sleep "$seconds"
-    kill -TERM "$child" 2>/dev/null || true
-    pkill -TERM -P "$child" 2>/dev/null || true
+    terminate_validation_group TERM
     sleep 1
-    kill -KILL "$child" 2>/dev/null || true
-    pkill -KILL -P "$child" 2>/dev/null || true
+    terminate_validation_group KILL
   ) &
   watcher=$!
+
   if wait "$child"; then rc=0; else rc=$?; fi
   kill -TERM "$watcher" 2>/dev/null || true
-  pkill -TERM -P "$watcher" 2>/dev/null || true
   wait "$watcher" 2>/dev/null || true
+
+  # The root may exit while a daemon/grandchild still owns stdout/FIFO. Always
+  # tear down any remaining members before returning to the capture layer.
+  if kill -0 -- "-$pgid" 2>/dev/null; then
+    terminate_validation_group TERM
+    sleep 1
+    if kill -0 -- "-$pgid" 2>/dev/null; then
+      terminate_validation_group KILL
+    fi
+  fi
   return "$rc"
-}
+)
 
 snapshot_path_is_forbidden() {
   local path="$1" lower_path basename_lower
