@@ -8,9 +8,11 @@ source "$SKILL_DIR/lib/validate.sh"
 
 REAL_RUN_SANDBOXED=$(declare -f run_sandboxed)
 run_sandboxed() {
-  local worktree="$2"
+  local worktree="$2" item
+  local -a env_args=()
   shift 5
-  (cd "$worktree" && "$@")
+  while IFS= read -r -d '' item; do env_args+=("$item"); done < <(copy_allowed_env "${AGENT_ENV_ALLOWLIST:-}")
+  (cd "$worktree" && env "${env_args[@]}" "$@")
 }
 
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/smart-pipeline-tests.XXXXXX")"
@@ -81,6 +83,7 @@ for agent in pi claude codex opencode; do
     opencode) OPENCODE_PROVIDER_ENV=CAPTURE_FILE ;;
   esac
   export PI_PROVIDER_ENV CLAUDE_PROVIDER_ENV CODEX_PROVIDER_ENV OPENCODE_PROVIDER_ENV
+  unset AGENT_EXECUTABLE
   spawn_fix_agent "$TMP_ROOT/repo" "$TMP_ROOT/findings.json" "$agent" "$TMP_ROOT/home" "$TMP_ROOT/agent-tmp" || fail "$agent adapter failed"
   assert_not_contains "$CAPTURE_FILE" "--file" "$agent adapter uses the removed generic --file flag"
   case "$agent" in
@@ -95,6 +98,30 @@ for agent in pi claude codex opencode; do
   esac
 done
 pass "all agent adapters execute through their verified unattended interfaces"
+
+mkdir -p "$TMP_ROOT/trusted-bin"
+ln -sf "$TMP_ROOT/fake-agent" "$TMP_ROOT/trusted-bin/pi"
+cat > "$TMP_ROOT/repo/pi" <<HIJACK
+#!/usr/bin/env bash
+touch "$TMP_ROOT/worktree-agent-hijacked"
+exit 0
+HIJACK
+chmod +x "$TMP_ROOT/repo/pi"
+OLD_PATH="$PATH"
+pushd "$TMP_ROOT" >/dev/null
+PATH=".:$TMP_ROOT/trusted-bin:$OLD_PATH"
+export PATH
+PI_PROVIDER_ENV=CAPTURE_FILE
+export PI_PROVIDER_ENV
+unset AGENT_EXECUTABLE
+spawn_fix_agent "$TMP_ROOT/repo" "$TMP_ROOT/findings.json" pi "$TMP_ROOT/home" "$TMP_ROOT/agent-tmp" || fail "absolute-path Pi adapter failed"
+popd >/dev/null
+PATH="$OLD_PATH"
+export PATH
+[[ ! -e "$TMP_ROOT/worktree-agent-hijacked" ]] || fail "worktree-controlled agent executable was selected after sandbox chdir"
+assert_contains "$CAPTURE_FILE" "$TMP_ROOT/pi" "preflighted agent executable remained absolute after sandbox chdir"
+rm -f "$TMP_ROOT/repo/pi"
+pass "agent execution keeps the preflighted absolute executable path"
 
 mkdir -p "$TMP_ROOT/data/iterations/1"
 rm -f "$TMP_ROOT/repo/secret.txt" "$TMP_ROOT/repo/test_support.txt"
@@ -128,12 +155,32 @@ if run_tests "$TMP_ROOT/repo" 'i=0; while [ "$i" -lt 5000 ]; do printf x; i=$((i
 fi
 OUTPUT_BYTES=$(wc -c < "$TMP_ROOT/data/iterations/1/test-output.txt" | tr -d ' ')
 [[ "$OUTPUT_BYTES" -le 1200 ]] || fail "validation output exceeded its configured bound"
+PREFIX_X_BYTES=$(head -c 1024 "$TMP_ROOT/data/iterations/1/test-output.txt" | tr -cd x | wc -c | tr -d ' ')
+[[ "$PREFIX_X_BYTES" -eq 1024 ]] || fail "validation drain lost short writes within the configured prefix"
 assert_contains "$TMP_ROOT/data/iterations/1/test-output.txt" '[output truncated at 1024 bytes]' 'bounded validation output records truncation'
 [[ ! -e "$TMP_ROOT/data/iterations/1/validation-worktree-tests" ]] || fail "failed validation snapshot was retained"
 [[ ! -e "$TMP_ROOT/data/iterations/1/sandbox-home-tests" ]] || fail "failed validation home was retained"
 [[ ! -e "$TMP_ROOT/data/iterations/1/sandbox-tmp-tests" ]] || fail "failed validation temp directory was retained"
-pass "validation output is bounded and disposable stage state is removed on failure"
+pass "validation output preserves the full byte prefix and removes disposable state on failure"
 unset VALIDATION_OUTPUT_LIMIT
+
+SUB_REPO="$TMP_ROOT/submodule-source"
+git init -q "$SUB_REPO"
+git -C "$SUB_REPO" config user.email test@example.invalid
+git -C "$SUB_REPO" config user.name test
+printf 'submodule\n' > "$SUB_REPO/sub.txt"
+git -C "$SUB_REPO" add sub.txt
+git -C "$SUB_REPO" commit -qm submodule
+SUB_SHA="$(git -C "$SUB_REPO" rev-parse HEAD)"
+mkdir -p "$TMP_ROOT/repo/vendor/sub"
+git -C "$TMP_ROOT/repo" update-index --add --cacheinfo 160000 "$SUB_SHA" vendor/sub
+if prepare_validation_snapshot "$TMP_ROOT/repo" "$TMP_ROOT/uninitialized-submodule-snapshot" 2>"$TMP_ROOT/uninitialized-submodule.err"; then
+  fail "uninitialized submodule was recursively copied"
+fi
+assert_contains "$TMP_ROOT/uninitialized-submodule.err" 'submodule is not initialized' 'uninitialized submodule fails closed before recursion'
+git -C "$TMP_ROOT/repo" reset -q HEAD -- vendor/sub || true
+rm -rf "$TMP_ROOT/repo/vendor" "$TMP_ROOT/uninitialized-submodule-snapshot"
+pass "validation refuses uninitialized submodules without recursive superproject traversal"
 
 COMMIT_REPO="$TMP_ROOT/commit-repo"
 git init -q "$COMMIT_REPO"
