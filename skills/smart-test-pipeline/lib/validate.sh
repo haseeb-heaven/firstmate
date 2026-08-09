@@ -64,7 +64,7 @@ run_lint() {
 }
 
 prepare_validation_snapshot() {
-  local source_dir="$1" snapshot_dir="$2" path lower_path parent
+  local source_dir="$1" snapshot_dir="$2" path lower_path parent target
   rm -rf "$snapshot_dir"
   mkdir -p "$snapshot_dir"
   while IFS= read -r -d '' path; do
@@ -79,7 +79,18 @@ prepare_validation_snapshot() {
         return 1
         ;;
     esac
-    [[ -f "$source_dir/$path" && ! -L "$source_dir/$path" ]] || {
+    if [[ -L "$source_dir/$path" ]]; then
+      target=$(readlink "$source_dir/$path")
+      [[ "$target" != /* && "$target" != ../* && "$target" != */../* ]] || {
+        echo "ERROR: unsafe symlink in validation snapshot: $path" >&2
+        return 1
+      }
+      parent="$snapshot_dir/$(dirname "$path")"
+      mkdir -p "$parent"
+      ln -s "$target" "$snapshot_dir/$path"
+      continue
+    fi
+    [[ -f "$source_dir/$path" ]] || {
       echo "ERROR: unsupported file type in validation snapshot: $path" >&2
       return 1
     }
@@ -88,6 +99,10 @@ prepare_validation_snapshot() {
     cp -p "$source_dir/$path" "$snapshot_dir/$path"
   done < <(git -C "$source_dir" ls-files --cached --others --exclude-standard -z)
   git -C "$snapshot_dir" init -q
+  git -C "$snapshot_dir" add -A
+  GIT_AUTHOR_NAME=validation GIT_AUTHOR_EMAIL=validation@localhost \
+    GIT_COMMITTER_NAME=validation GIT_COMMITTER_EMAIL=validation@localhost \
+    git -C "$snapshot_dir" commit -qm "credential-free validation snapshot"
 }
 
 push_changes() {
@@ -115,20 +130,37 @@ wait_for_ci() {
   local conclusions_file="$data_dir/iterations/$iteration/ci-conclusions.json"
   local failures_file="$data_dir/iterations/$iteration/ci-failures.md"
   while (( SECONDS - start < timeout )); do
-    local check_runs
+    local check_runs statuses
     check_runs=$(gh api --paginate --slurp "/repos/$owner/$repo/commits/$sha/check-runs" 2>/dev/null) || {
       echo "ERROR: unable to read CI checks" >&2
+      return 1
+    }
+    statuses=$(gh api --paginate --slurp "/repos/$owner/$repo/commits/$sha/statuses" 2>/dev/null) || {
+      echo "ERROR: unable to read commit statuses" >&2
       return 1
     }
     local total pending
     total=$(jq '[.[].check_runs[]] | length' <<<"$check_runs")
     pending=$(jq '[.[].check_runs[] | select(.status != "completed")] | length' <<<"$check_runs")
-    if [[ "$total" -eq 0 ]]; then sleep 30; continue; fi
+    local status_total status_pending
+    status_total=$(jq '[.[][]] | length' <<<"$statuses")
+    status_pending=$(jq '[.[][] | select(.state == "pending")] | length' <<<"$statuses")
+    total=$((total + status_total)); pending=$((pending + status_pending))
+    if [[ "$total" -eq 0 ]]; then
+      printf '## CI Failures\n\n- No CI checks or commit statuses reported\n' > "$failures_file"
+      return 1
+    fi
     if [[ "$pending" -gt 0 ]]; then sleep 30; continue; fi
     jq '[.[].check_runs[] | {name, conclusion, details_url: .html_url}]' <<<"$check_runs" > "$conclusions_file"
+    jq '[.[][] | {name: .context, conclusion: (if .state == "success" then "success" else .state end), details_url: .target_url}]' <<<"$statuses" > "$conclusions_file.statuses"
+    jq -s '.[0] + .[1]' "$conclusions_file" "$conclusions_file.statuses" > "$conclusions_file.tmp"
+    mv "$conclusions_file.tmp" "$conclusions_file"
+    rm -f "$conclusions_file.statuses"
     local failed
     failed=$(jq '[.[] | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")] | length' "$conclusions_file")
-    if [[ "$failed" -eq 0 ]]; then
+    local successful
+    successful=$(jq '[.[] | select(.conclusion == "success")] | length' "$conclusions_file")
+    if [[ "$failed" -eq 0 && "$successful" -gt 0 ]]; then
       rm -f "$failures_file"
       return 0
     fi

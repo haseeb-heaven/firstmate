@@ -49,6 +49,22 @@ ci_findings() {
   jq -n --arg body "$(cat "$previous")" '[{id:"ci-failure",path:"unknown",line:null,severity:"high",body:$body,source:"github-ci"}]'
 }
 
+preflight_agent() {
+  command -v "$FIX_AGENT" >/dev/null 2>&1 || {
+    echo "ERROR: fix agent '$FIX_AGENT' is not installed; refusing to trigger review bots" >&2
+    return 1
+  }
+  case "${AGENT_SANDBOX:-auto}" in
+    macos) sandbox_exec_works || { echo "ERROR: macOS agent sandbox unavailable" >&2; return 1; } ;;
+    bwrap) command -v bwrap >/dev/null 2>&1 || { echo "ERROR: bwrap unavailable" >&2; return 1; } ;;
+    docker) command -v docker >/dev/null 2>&1 || { echo "ERROR: Docker unavailable" >&2; return 1; } ;;
+    auto) sandbox_exec_works || command -v bwrap >/dev/null 2>&1 || command -v docker >/dev/null 2>&1 || {
+      echo "ERROR: no disposable agent sandbox backend is available" >&2; return 1;
+    } ;;
+    *) echo "ERROR: unsupported agent sandbox mode: $AGENT_SANDBOX" >&2; return 1 ;;
+  esac
+}
+
 run_pipeline() {
   mkdir -p "$DATA_DIR/iterations" "$RUN_ROOT/agent-home" "$RUN_ROOT/agent-tmp" \
     "$DATA_DIR/sandbox-home" "$DATA_DIR/sandbox-tmp"
@@ -59,11 +75,13 @@ run_pipeline() {
   fi
 
   require_pr_open "$OWNER" "$REPO" "$PR_NUM"
+  preflight_agent || { PIPELINE_RESULT="agent_preflight_failed"; write_final_report "$DATA_DIR" 0 "$PIPELINE_RESULT"; return 1; }
   trigger_reviews || { PIPELINE_RESULT="review_blocked"; write_final_report "$DATA_DIR" 0 "$PIPELINE_RESULT"; return 1; }
   wait_for_reviews || { PIPELINE_RESULT="review_blocked"; write_final_report "$DATA_DIR" 0 "$PIPELINE_RESULT"; return 1; }
 
   for (( ITERATION=1; ITERATION<=MAX_ITERATIONS; ITERATION++ )); do
     local iter_dir="$DATA_DIR/iterations/$ITERATION"
+    rm -rf "$iter_dir"
     mkdir -p "$iter_dir"
     local findings findings_file
     findings=$(collect_findings "$OWNER" "$REPO" "$PR_NUM" "$iter_dir") || {

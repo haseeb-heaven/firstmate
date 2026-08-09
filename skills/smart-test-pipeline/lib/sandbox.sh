@@ -15,13 +15,8 @@ copy_allowed_env() {
 }
 
 agent_provider_env() {
-  case "$1" in
-    pi) printf '%s' "${PI_PROVIDER_ENV:-ANTHROPIC_API_KEY}" ;;
-    claude) printf '%s' "${CLAUDE_PROVIDER_ENV:-ANTHROPIC_API_KEY}" ;;
-    codex) printf '%s' "${CODEX_PROVIDER_ENV:-OPENAI_API_KEY}" ;;
-    opencode) printf '%s' "${OPENCODE_PROVIDER_ENV:-OPENAI_API_KEY}" ;;
-    *) return 1 ;;
-  esac
+  # Provider secrets must never enter an agent-controlled subprocess.
+  printf '%s' ""
 }
 
 agent_provider_hosts() {
@@ -40,7 +35,7 @@ sandbox_exec_works() {
 }
 
 write_macos_profile() {
-  local profile="$1" worktree="$2" agent_home="$3" temp_dir="$4" allow_network="$5" provider_hosts="$6"
+  local profile="$1" worktree="$2" agent_home="$3" temp_dir="$4" allow_network="$5" provider_hosts="$6" executable="${7:-}"
   cat > "$profile" <<PROFILE
 (version 1)
 (deny default)
@@ -49,6 +44,7 @@ write_macos_profile() {
 (allow file-read* (subpath "$worktree"))
 (allow file-read* (subpath "$agent_home"))
 (allow file-read* (subpath "$temp_dir"))
+(allow file-read* (subpath "$executable"))
 (allow file-write* (subpath "$worktree"))
 (allow file-write* (subpath "$agent_home"))
 (allow file-write* (subpath "$temp_dir"))
@@ -101,7 +97,7 @@ _run_sandboxed_impl() {
   case "$mode" in
     macos)
       local profile="$temp_dir/sandbox.sb"
-      write_macos_profile "$profile" "$worktree" "$home_dir" "$temp_dir" "$allow_network" "$provider_hosts"
+      write_macos_profile "$profile" "$worktree" "$home_dir" "$temp_dir" "$allow_network" "$provider_hosts" "${AGENT_EXECUTABLE:-}"
       sandbox-exec -f "$profile" -- "${clean_env[@]}" "${command[@]}"
       ;;
     bwrap)

@@ -51,6 +51,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+[[ "$WAIT_CI" == true || "$WAIT_CI" == false ]] || { echo "ERROR: --wait-ci must be exactly true or false" >&2; exit 2; }
+
 if [[ -z "$PR_URL" ]]; then
   echo "Usage: $0 <PR_URL> [--max-iterations N] [--fix-agent AGENT] [--wait-ci true|false] [--dry-run]" >&2
   exit 2
@@ -73,18 +75,20 @@ fi
 REPO_FULL="$OWNER/$REPO"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}"
 REPO_ROOT="$CACHE_ROOT/$OWNER/$REPO"
-REPOSITORY_DIR="$REPO_ROOT/repository"
 WORKTREE_DIR="$REPO_ROOT/worktrees/$RUN_ID"
 RUN_ROOT="$DATA_ROOT/$OWNER/$REPO/pr-$PR_NUM/$RUN_ID"
 LOCK_DIR="$REPO_ROOT/locks/pr-$PR_NUM.lock"
 DATA_DIR="$RUN_ROOT"
+REPOSITORY_DIR="$RUN_ROOT/repository"
+LOCK_ACQUIRED=false
+WORKTREE_CLEANUP=false
 
 cleanup() {
   local rc=$?
-  if [[ -n "${WORKTREE_DIR:-}" && -d "$WORKTREE_DIR" && -d "${REPOSITORY_DIR:-}/.git" ]]; then
+  if [[ "${WORKTREE_CLEANUP:-false}" == true && "$rc" -eq 0 && -n "${WORKTREE_DIR:-}" && -d "$WORKTREE_DIR" && -d "${REPOSITORY_DIR:-}/.git" ]]; then
     git -C "$REPOSITORY_DIR" worktree remove --force "$WORKTREE_DIR" >/dev/null 2>&1 || true
   fi
-  if [[ -n "${LOCK_DIR:-}" && -d "$LOCK_DIR" ]]; then
+  if [[ "${LOCK_ACQUIRED:-false}" == true && -n "${LOCK_DIR:-}" && -d "$LOCK_DIR" ]]; then
     rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
   fi
   if [[ "${DRY_RUN:-false}" == true ]]; then
@@ -126,6 +130,7 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   echo -e "${RED}ERROR: another pipeline is already operating on $REPO_FULL PR #$PR_NUM${NC}" >&2
   exit 1
 fi
+LOCK_ACQUIRED=true
 
 PR_METADATA="$(gh pr view "$PR_NUM" --repo "$REPO_FULL" --json state,headRefName,headRepositoryOwner,headRepository,baseRefName,baseRefOid,headRefOid 2>/dev/null)" || {
   echo -e "${RED}ERROR: unable to read PR metadata${NC}" >&2
@@ -148,11 +153,11 @@ if [[ -z "$PR_BRANCH" || -z "$HEAD_OWNER" || -z "$HEAD_REPO" || -z "$BASE_BRANCH
   exit 1
 fi
 
-mkdir -p "$REPOSITORY_DIR" "$REPO_ROOT/worktrees"
-if [[ ! -d "$REPOSITORY_DIR/.git" ]]; then
-  rmdir "$REPOSITORY_DIR" 2>/dev/null || true
-  git clone "https://github.com/$REPO_FULL.git" "$REPOSITORY_DIR" >/dev/null
-fi
+mkdir -p "$REPO_ROOT/worktrees" "$RUN_ROOT"
+clone_dir="$RUN_ROOT/repository.partial"
+rm -rf "$clone_dir"
+git clone --no-checkout "https://github.com/$REPO_FULL.git" "$clone_dir" >/dev/null
+mv "$clone_dir" "$REPOSITORY_DIR"
 
 git -C "$REPOSITORY_DIR" fetch --no-tags origin "$BASE_BRANCH" >/dev/null
 if [[ "$HEAD_OWNER/$HEAD_REPO" != "$REPO_FULL" ]]; then
@@ -179,6 +184,7 @@ if ! git -C "$REPOSITORY_DIR" merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA"; 
 fi
 
 git -C "$REPOSITORY_DIR" worktree add --detach "$WORKTREE_DIR" "$HEAD_SHA" >/dev/null
+WORKTREE_CLEANUP=true
 BRANCH="$PR_BRANCH"
 LOCAL_BRANCH="detached-pr-$PR_NUM-$RUN_ID"
 

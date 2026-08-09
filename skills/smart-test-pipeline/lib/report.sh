@@ -152,7 +152,7 @@ EOF
 
   case "$result" in
     clean)
-      echo "🎉 **PR is clean!** All review findings resolved, tests passing, CI green." >> "$report_file"
+      echo "🎉 **Review findings are clean.** Validation results above reflect only stages that actually ran." >> "$report_file"
       echo "" >> "$report_file"
       echo "The PR is ready for captain review and merge." >> "$report_file"
       ;;
