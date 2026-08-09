@@ -6,6 +6,52 @@ VALIDATE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$VALIDATE_LIB_DIR/colors.sh"
 source "$VALIDATE_LIB_DIR/sandbox.sh"
 
+cleanup_validation_stage() {
+  rm -rf "$@"
+}
+
+bounded_output_drain() {
+  local fifo="$1" output_file="$2" limit="$3"
+  local block_size=4096 blocks size remainder truncated=false tmp_file
+  blocks=$(( (limit + block_size - 1) / block_size ))
+  : > "$output_file"
+  exec 7<"$fifo"
+  dd bs="$block_size" count="$blocks" <&7 > "$output_file" 2>/dev/null || true
+  remainder=$(wc -c <&7 | tr -d ' ')
+  exec 7<&-
+  [[ "$remainder" =~ ^[0-9]+$ ]] || remainder=0
+  [[ "$remainder" -eq 0 ]] || truncated=true
+  size=$(wc -c < "$output_file" | tr -d ' ')
+  [[ "$size" =~ ^[0-9]+$ ]] || size=0
+  if [[ "$size" -gt "$limit" ]]; then
+    tmp_file="${output_file}.trim.$$"
+    head -c "$limit" "$output_file" > "$tmp_file"
+    mv "$tmp_file" "$output_file"
+    truncated=true
+  fi
+  if [[ "$truncated" == true ]]; then
+    printf '\n[output truncated at %s bytes]\n' "$limit" >> "$output_file"
+  fi
+}
+
+run_validation_captured() {
+  local limit="$1" output_file="$2"
+  shift 2
+  [[ "$limit" =~ ^[1-9][0-9]*$ ]] || {
+    echo "ERROR: VALIDATION_OUTPUT_LIMIT must be a positive integer" >&2
+    return 2
+  }
+  local fifo="${output_file}.pipe.$$" drain_pid rc=0
+  rm -f "$fifo"
+  mkfifo "$fifo"
+  bounded_output_drain "$fifo" "$output_file" "$limit" &
+  drain_pid=$!
+  "$@" > "$fifo" 2>&1 || rc=$?
+  wait "$drain_pid" || true
+  rm -f "$fifo"
+  return "$rc"
+}
+
 run_tests() {
   local worktree_dir="$1" test_cmd="$2" data_dir="$3" iteration="$4"
   local output_file="$data_dir/iterations/$iteration/test-output.txt"
@@ -20,15 +66,18 @@ run_tests() {
   if ! prepare_validation_snapshot "$worktree_dir" "$snapshot_dir" 2>"$output_file"; then
     printf 'Tests could not prepare a disposable snapshot.\n' >> "$output_file"
     cp "$output_file" "$failure_file"
+    cleanup_validation_stage "$snapshot_dir" "$sandbox_home" "$sandbox_tmp"
     return 1
   fi
   AGENT_ENV_ALLOWLIST=""
   export AGENT_ENV_ALLOWLIST
-  run_validation_command "${VALIDATION_TIMEOUT:-3600}" \
-    run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$snapshot_dir" "$sandbox_home" "$sandbox_tmp" \
-    false bash -c "$test_cmd" >"$output_file" 2>&1 || rc=$?
+  run_validation_captured "${VALIDATION_OUTPUT_LIMIT:-1048576}" "$output_file" \
+    run_validation_command "${VALIDATION_TIMEOUT:-3600}" \
+      run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$snapshot_dir" "$sandbox_home" "$sandbox_tmp" \
+      false bash -c "$test_cmd" || rc=$?
   AGENT_ENV_ALLOWLIST="$saved_agent_env"
   export AGENT_ENV_ALLOWLIST
+  cleanup_validation_stage "$snapshot_dir" "$sandbox_home" "$sandbox_tmp"
   if [[ $rc -ne 0 ]]; then
     cp "$output_file" "$failure_file"
     echo -e "${RED}  ${CROSS} Tests failed (exit $rc)${NC}"
@@ -53,15 +102,18 @@ run_lint() {
   if ! prepare_validation_snapshot "$worktree_dir" "$snapshot_dir" 2>"$output_file"; then
     printf 'Lint could not prepare a disposable snapshot.\n' >> "$output_file"
     cp "$output_file" "$failure_file"
+    cleanup_validation_stage "$snapshot_dir" "$sandbox_home" "$sandbox_tmp"
     return 1
   fi
   AGENT_ENV_ALLOWLIST=""
   export AGENT_ENV_ALLOWLIST
-  run_validation_command "${VALIDATION_TIMEOUT:-3600}" \
-    run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$snapshot_dir" "$sandbox_home" "$sandbox_tmp" \
-    false bash -c "$lint_cmd" >"$output_file" 2>&1 || rc=$?
+  run_validation_captured "${VALIDATION_OUTPUT_LIMIT:-1048576}" "$output_file" \
+    run_validation_command "${VALIDATION_TIMEOUT:-3600}" \
+      run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$snapshot_dir" "$sandbox_home" "$sandbox_tmp" \
+      false bash -c "$lint_cmd" || rc=$?
   AGENT_ENV_ALLOWLIST="$saved_agent_env"
   export AGENT_ENV_ALLOWLIST
+  cleanup_validation_stage "$snapshot_dir" "$sandbox_home" "$sandbox_tmp"
   if [[ $rc -ne 0 ]]; then
     cp "$output_file" "$failure_file"
     echo -e "${RED}  ${CROSS} Lint failed (exit $rc)${NC}"
@@ -93,47 +145,54 @@ run_validation_command() {
   return "$rc"
 }
 
-prepare_validation_snapshot() {
-  local source_dir="$1" snapshot_dir="$2" path lower_path basename_lower parent target
-  rm -rf "$snapshot_dir"
-  mkdir -p "$snapshot_dir"
+snapshot_path_is_forbidden() {
+  local path="$1" lower_path basename_lower
+  [[ "$path" != /* && "$path" != .git && "$path" != .git/* ]] || return 0
+  lower_path=$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')
+  basename_lower="${lower_path##*/}"
+  case "$basename_lower" in
+    .env|.env.*|*.key|*.pem|*.p12|*.pfx)
+      case "$basename_lower" in
+        .env.example|.env.*.example) ;;
+        *) return 0 ;;
+      esac
+      ;;
+  esac
+  case "$lower_path" in
+    *credentials*|*credential*)
+      case "$lower_path" in
+        docs/*.md) ;;
+        *) return 0 ;;
+      esac
+      ;;
+  esac
+  return 1
+}
+
+copy_snapshot_repo() {
+  local source_dir="$1" snapshot_dir="$2" include_untracked="$3"
+  local path mode parent target
+  local -a ls_args=(--cached)
+  if [[ "$include_untracked" == true ]]; then
+    ls_args+=(--others --exclude-standard)
+  fi
   while IFS= read -r -d '' path; do
-    [[ "$path" != /* && "$path" != .git && "$path" != .git/* ]] || {
-      echo "ERROR: Git control path in validation snapshot: $path" >&2
+    if snapshot_path_is_forbidden "$path"; then
+      echo "ERROR: secret-like or control path refused in validation snapshot: $path" >&2
       return 1
-    }
-    lower_path=$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')
-    basename_lower="${lower_path##*/}"
-    case "$basename_lower" in
-      .env|.env.*|*.key|*.pem|*.p12|*.pfx)
-        case "$basename_lower" in
-          .env.example|.env.*.example) ;;
-          *)
-            echo "ERROR: secret-like path refused in validation snapshot: $path" >&2
-            return 1
-            ;;
-        esac
-        ;;
-    esac
-    case "$lower_path" in
-      *credentials*|*credential*)
-        if [[ "$path" == docs/*.md || "$path" == docs/**/*.md ]]; then :; else
-          echo "ERROR: secret-like path refused in validation snapshot: $path" >&2
-          return 1
-        fi
-        ;;
-    esac
-    if [[ "$(git -C "$source_dir" ls-files --stage -- "$path" | awk 'NR == 1 { print $1 }')" == 160000 ]]; then
+    fi
+    mode=$(git -C "$source_dir" ls-files --stage -- "$path" | awk 'NR == 1 { print $1 }')
+    if [[ "$mode" == 160000 ]]; then
       [[ -d "$source_dir/$path" ]] || {
         echo "ERROR: checked-out submodule missing from validation snapshot: $path" >&2
         return 1
       }
       parent="$snapshot_dir/$path"
       mkdir -p "$parent"
-      git -C "$source_dir/$path" archive --format=tar HEAD | tar -xf - -C "$parent" || {
-        echo "ERROR: unable to archive submodule in validation snapshot: $path" >&2
+      if ! copy_snapshot_repo "$source_dir/$path" "$parent" false; then
+        echo "ERROR: unsafe content refused from submodule validation snapshot: $path" >&2
         return 1
-      }
+      fi
       continue
     fi
     if [[ -L "$source_dir/$path" ]]; then
@@ -155,7 +214,14 @@ prepare_validation_snapshot() {
     parent="$snapshot_dir/$(dirname "$path")"
     mkdir -p "$parent"
     cp -p "$source_dir/$path" "$snapshot_dir/$path"
-  done < <(git -C "$source_dir" ls-files --cached --others --exclude-standard -z)
+  done < <(git -C "$source_dir" ls-files "${ls_args[@]}" -z)
+}
+
+prepare_validation_snapshot() {
+  local source_dir="$1" snapshot_dir="$2"
+  rm -rf "$snapshot_dir"
+  mkdir -p "$snapshot_dir"
+  copy_snapshot_repo "$source_dir" "$snapshot_dir" true || return 1
   git -C "$snapshot_dir" init -q
   git -C "$snapshot_dir" add -A
   GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
@@ -189,6 +255,11 @@ wait_for_ci() {
   local start=$SECONDS
   local conclusions_file="$data_dir/iterations/$iteration/ci-conclusions.json"
   local failures_file="$data_dir/iterations/$iteration/ci-failures.md"
+  local stability_polls="${CI_STABILITY_POLLS:-2}" stable_polls=0 stable_fingerprint="" fingerprint
+  [[ "$stability_polls" =~ ^[1-9][0-9]*$ ]] || {
+    echo "ERROR: CI_STABILITY_POLLS must be a positive integer" >&2
+    return 2
+  }
   while (( SECONDS - start < timeout )); do
     local check_runs statuses
     check_runs=$(gh api --paginate --slurp "/repos/$owner/$repo/commits/$sha/check-runs" 2>/dev/null) || {
@@ -207,21 +278,40 @@ wait_for_ci() {
     status_total=$(jq 'length' <<<"$latest_statuses")
     status_pending=$(jq '[.[] | select(.state == "pending")] | length' <<<"$latest_statuses")
     total=$((total + status_total)); pending=$((pending + status_pending))
-    if [[ "$total" -eq 0 ]]; then sleep 5; continue; fi
-    if [[ "$pending" -gt 0 ]]; then sleep 30; continue; fi
+    if [[ "$total" -eq 0 ]]; then
+      stable_polls=0; stable_fingerprint=""
+      sleep "${POLL_INTERVAL:-5}"
+      continue
+    fi
+    if [[ "$pending" -gt 0 ]]; then
+      stable_polls=0; stable_fingerprint=""
+      sleep "${POLL_INTERVAL:-30}"
+      continue
+    fi
     jq '[.[].check_runs[] | {name, conclusion, details_url: .html_url}]' <<<"$check_runs" > "$conclusions_file"
     jq --argjson latest "$latest_statuses" '[ $latest[] | {name: .context, conclusion: (if .state == "success" then "success" else .state end), details_url: .target_url} ]' <<<"{}" > "$conclusions_file.statuses"
     jq -s '.[0] + .[1]' "$conclusions_file" "$conclusions_file.statuses" > "$conclusions_file.tmp"
     mv "$conclusions_file.tmp" "$conclusions_file"
     rm -f "$conclusions_file.statuses"
-    local failed
+    local failed successful
     failed=$(jq '[.[] | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")] | length' "$conclusions_file")
-    local successful
     successful=$(jq '[.[] | select(.conclusion == "success")] | length' "$conclusions_file")
     if [[ "$failed" -eq 0 && "$successful" -gt 0 ]]; then
-      rm -f "$failures_file"
-      return 0
+      fingerprint=$(jq -r 'sort_by(.name) | map("\(.name)=\(.conclusion)") | join("\n")' "$conclusions_file")
+      if [[ "$fingerprint" == "$stable_fingerprint" ]]; then
+        stable_polls=$((stable_polls + 1))
+      else
+        stable_fingerprint="$fingerprint"
+        stable_polls=1
+      fi
+      if [[ "$stable_polls" -ge "$stability_polls" ]]; then
+        rm -f "$failures_file"
+        return 0
+      fi
+      sleep "${POLL_INTERVAL:-30}"
+      continue
     fi
+    stable_polls=0; stable_fingerprint=""
     {
       echo "## CI Failures"
       jq -r '.[] | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped") | "- **\(.name)**: \(.conclusion) (\(.details_url))"' "$conclusions_file"
