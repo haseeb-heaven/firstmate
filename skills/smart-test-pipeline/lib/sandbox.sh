@@ -14,14 +14,18 @@ copy_allowed_env() {
   done
 }
 
+# Networked fix agents must authenticate through an operator-owned broker that
+# does not expose reusable provider credentials in the agent environment. The
+# pipeline deliberately refuses raw API-key forwarding because every agent
+# child process would inherit those variables.
 agent_provider_env() {
   case "$1" in
-    pi) printf '%s' "${PI_PROVIDER_ENV:-ANTHROPIC_API_KEY}" ;;
-    claude) printf '%s' "${CLAUDE_PROVIDER_ENV:-ANTHROPIC_API_KEY}" ;;
-    codex) printf '%s' "${CODEX_PROVIDER_ENV:-OPENAI_API_KEY}" ;;
-    opencode) printf '%s' "${OPENCODE_PROVIDER_ENV:-OPENAI_API_KEY}" ;;
+    pi|claude|codex|opencode) ;;
     *) return 1 ;;
   esac
+  local broker="${AGENT_CREDENTIAL_BROKER:-}"
+  [[ "$broker" == /* && -x "$broker" ]] || return 1
+  printf '%s' 'AGENT_CREDENTIAL_BROKER'
 }
 
 agent_provider_hosts() {
@@ -137,14 +141,36 @@ worktree_git_metadata_paths() {
   [[ -n "$common_dir" && -d "$common_dir" && "$common_dir" != "$git_dir" ]] && printf '%s\n' "$common_dir"
 }
 
+append_macos_executable_permissions() {
+  local profile="$1" executable="$2" resolved="" interpreter="" runtime_root
+  [[ -n "$executable" ]] || return 0
+  [[ "$executable" == /* && -x "$executable" ]] || {
+    echo "ERROR: sandbox executable must be an absolute executable path: $executable" >&2
+    return 1
+  }
+  resolved=$(resolve_runtime_path "$executable") || return 1
+  interpreter=$(runtime_interpreter_path "$executable") || return 1
+
+  printf '(allow file-read* (literal "%s"))\n' "$executable" >> "$profile"
+  if [[ -n "$resolved" && "$resolved" != "$executable" ]]; then
+    printf '(allow file-read* (literal "%s"))\n' "$resolved" >> "$profile"
+  fi
+  if [[ -n "$interpreter" ]]; then
+    printf '(allow file-read* (literal "%s"))\n' "$interpreter" >> "$profile"
+  fi
+  while IFS= read -r runtime_root; do
+    [[ -n "$runtime_root" ]] || continue
+    printf '(allow file-read* (subpath "%s"))\n' "$runtime_root" >> "$profile"
+  done < <(
+    {
+      agent_runtime_roots "$resolved"
+      agent_runtime_roots "$interpreter"
+    } | awk '!seen[$0]++'
+  )
+}
+
 write_macos_profile() {
   local profile="$1" worktree="$2" agent_home="$3" temp_dir="$4" allow_network="$5" provider_hosts="$6" executable="${7:-}"
-  local resolved_executable="" interpreter=""
-  if [[ -n "$executable" ]]; then
-    resolved_executable=$(resolve_runtime_path "$executable") || return 1
-    interpreter=$(runtime_interpreter_path "$executable") || return 1
-  fi
-
   cat > "$profile" <<PROFILE
 (version 1)
 (deny default)
@@ -160,26 +186,10 @@ write_macos_profile() {
 (deny file-write* (subpath "$worktree/.git"))
 PROFILE
 
-  if [[ -n "$executable" ]]; then
-    printf '(allow file-read* (literal "%s"))\n' "$executable" >> "$profile"
+  append_macos_executable_permissions "$profile" "$executable" || return 1
+  if [[ "$allow_network" == true && -n "${AGENT_TARGET_EXECUTABLE:-}" && "${AGENT_TARGET_EXECUTABLE}" != "$executable" ]]; then
+    append_macos_executable_permissions "$profile" "$AGENT_TARGET_EXECUTABLE" || return 1
   fi
-  if [[ -n "$resolved_executable" && "$resolved_executable" != "$executable" ]]; then
-    printf '(allow file-read* (literal "%s"))\n' "$resolved_executable" >> "$profile"
-  fi
-  if [[ -n "$interpreter" ]]; then
-    printf '(allow file-read* (literal "%s"))\n' "$interpreter" >> "$profile"
-  fi
-
-  local runtime_root
-  while IFS= read -r runtime_root; do
-    [[ -n "$runtime_root" ]] || continue
-    printf '(allow file-read* (subpath "%s"))\n' "$runtime_root" >> "$profile"
-  done < <(
-    {
-      agent_runtime_roots "$resolved_executable"
-      agent_runtime_roots "$interpreter"
-    } | awk '!seen[$0]++'
-  )
 
   local git_metadata
   while IFS= read -r git_metadata; do
@@ -231,8 +241,11 @@ _run_sandboxed_impl() {
 
   case "$mode" in
     macos)
-      local profile="$temp_dir/sandbox.sb"
-      write_macos_profile "$profile" "$worktree" "$home_dir" "$temp_dir" "$allow_network" "$provider_hosts" "${AGENT_EXECUTABLE:-}"
+      local profile="$temp_dir/sandbox.sb" profile_executable=""
+      if [[ "$allow_network" == true ]]; then
+        profile_executable="${AGENT_BROKER_EXECUTABLE:-${AGENT_EXECUTABLE:-}}"
+      fi
+      write_macos_profile "$profile" "$worktree" "$home_dir" "$temp_dir" "$allow_network" "$provider_hosts" "$profile_executable"
       sandbox-exec -f "$profile" -- "${clean_env[@]}" "${command[@]}"
       ;;
     bwrap)
