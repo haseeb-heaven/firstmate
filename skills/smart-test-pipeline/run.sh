@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
 # run.sh — guarded PR review → fix → validate → repeat loop
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/colors.sh"
 source "$SCRIPT_DIR/lib/report.sh"
 
-# Operator configuration is loaded before built-in defaults. CLI flags are
-# parsed afterwards and therefore always take precedence over both.
 CONFIG_FILE="${SMART_TEST_CONFIG:-$SCRIPT_DIR/config.sh}"
 if [[ -f "$CONFIG_FILE" ]]; then
-  # This file is operator-owned and must never come from the PR worktree.
   # shellcheck source=/dev/null
   source "$CONFIG_FILE"
 fi
@@ -95,7 +93,13 @@ worktree_is_clean() {
 
 cleanup() {
   local rc=$?
-  if [[ "${WORKTREE_CLEANUP:-false}" == true && "${WORKTREE_LANDED:-false}" == true && "$rc" -eq 0 && -d "${REPOSITORY_DIR:-}/.git" ]] && worktree_is_clean; then
+  local disposable=false
+  if [[ "$rc" -eq 0 && "${PIPELINE_RESULT:-}" == clean && "${WORKTREE_CLEANUP:-false}" == true ]] && worktree_is_clean; then
+    disposable=true
+  elif [[ "$rc" -eq 0 && "${WORKTREE_LANDED:-false}" == true && "${WORKTREE_CLEANUP:-false}" == true ]] && worktree_is_clean; then
+    disposable=true
+  fi
+  if [[ "$disposable" == true && -d "${REPOSITORY_DIR:-}/.git" ]]; then
     if git -C "$REPOSITORY_DIR" worktree remove "$WORKTREE_DIR" >/dev/null 2>&1; then
       rm -rf "$REPOSITORY_DIR"
     fi
@@ -114,7 +118,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$DATA_DIR/iterations"
+mkdir -p -m 700 "$DATA_DIR/iterations"
+chmod 700 "$DATA_ROOT" "$DATA_ROOT/$OWNER" "$DATA_ROOT/$OWNER/$REPO" "$DATA_ROOT/$OWNER/$REPO/pr-$PR_NUM" "$RUN_ROOT" 2>/dev/null || true
 
 echo -e "${CYAN}╔══════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║${NC}  ${YELLOW}Smart Test Pipeline — Guarded PR Review${NC}       ${CYAN}║${NC}"
@@ -137,24 +142,30 @@ if ! gh auth status >/dev/null 2>&1; then
   exit 1
 fi
 
-mkdir -p "$REPO_ROOT/locks" "$RUN_ROOT"
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+mkdir -p -m 700 "$REPO_ROOT/locks" "$RUN_ROOT"
+if ! mkdir -m 700 "$LOCK_DIR" 2>/dev/null; then
   lock_pid=""
-  [[ -f "$LOCK_DIR/owner" ]] && lock_pid=$(awk -F= '$1 == "pid" { print $2 }' "$LOCK_DIR/owner")
+  lock_repo=""
+  lock_pr=""
+  if [[ -f "$LOCK_DIR/owner" ]]; then
+    lock_pid=$(awk -F= '$1 == "pid" { print $2 }' "$LOCK_DIR/owner")
+    lock_repo=$(awk -F= '$1 == "repo" { print tolower($2) }' "$LOCK_DIR/owner")
+    lock_pr=$(awk -F= '$1 == "pr_num" { print $2 }' "$LOCK_DIR/owner")
+  fi
   lock_active=false
-  if [[ "$lock_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$lock_pid" 2>/dev/null; then
-    lock_command=$(ps -p "$lock_pid" -o command= 2>/dev/null || true)
-    [[ "$lock_command" == *"$PR_URL"* ]] && lock_active=true
+  if [[ "$lock_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$lock_pid" 2>/dev/null && [[ "$lock_repo" == "$REPO_FULL" && "$lock_pr" == "$PR_NUM" ]]; then
+    lock_active=true
   fi
   if [[ "$lock_active" == true ]]; then
     echo -e "${RED}ERROR: another pipeline is actively operating on $REPO_FULL PR #$PR_NUM${NC}" >&2
     exit 1
   fi
   rm -rf "$LOCK_DIR"
-  mkdir "$LOCK_DIR" || { echo -e "${RED}ERROR: unable to recover stale lock for $REPO_FULL PR #$PR_NUM${NC}" >&2; exit 1; }
+  mkdir -m 700 "$LOCK_DIR" || { echo -e "${RED}ERROR: unable to recover stale lock for $REPO_FULL PR #$PR_NUM${NC}" >&2; exit 1; }
 fi
 LOCK_ACQUIRED=true
-printf 'pid=%s\npr=%s\nstarted=%s\n' "$$" "$PR_URL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOCK_DIR/owner"
+printf 'pid=%s\nrepo=%s\npr_num=%s\nstarted=%s\n' "$$" "$REPO_FULL" "$PR_NUM" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOCK_DIR/owner"
+chmod 600 "$LOCK_DIR/owner"
 
 PR_METADATA="$(gh pr view "$PR_NUM" --repo "$REPO_FULL" --json state,headRefName,headRepositoryOwner,headRepository,baseRefName,baseRefOid,headRefOid 2>/dev/null)" || {
   echo -e "${RED}ERROR: unable to read PR metadata${NC}" >&2
@@ -177,22 +188,18 @@ if [[ -z "$PR_BRANCH" || -z "$HEAD_OWNER" || -z "$HEAD_REPO" || -z "$BASE_BRANCH
   exit 1
 fi
 
-mkdir -p "$REPO_ROOT/worktrees" "$RUN_ROOT"
+mkdir -p -m 700 "$REPO_ROOT/worktrees" "$RUN_ROOT"
 clone_dir="$RUN_ROOT/repository.partial"
 rm -rf "$clone_dir"
-git clone --no-checkout "https://github.com/$REPO_FULL.git" "$clone_dir" >/dev/null
+git -c credential.helper='!gh auth git-credential' clone --no-checkout "https://github.com/$REPO_FULL.git" "$clone_dir" >/dev/null
 mv "$clone_dir" "$REPOSITORY_DIR"
 git -C "$REPOSITORY_DIR" config user.name "Smart Test Pipeline"
 git -C "$REPOSITORY_DIR" config user.email "smart-test-pipeline@localhost"
 git -C "$REPOSITORY_DIR" config credential.helper '!gh auth git-credential'
 
 git -C "$REPOSITORY_DIR" fetch --no-tags origin "$BASE_BRANCH" >/dev/null
-if [[ "$HEAD_OWNER/$HEAD_REPO" != "$REPO_FULL" ]]; then
-  if git -C "$REPOSITORY_DIR" remote get-url pr-head >/dev/null 2>&1; then
-    git -C "$REPOSITORY_DIR" remote set-url pr-head "https://github.com/$HEAD_OWNER/$HEAD_REPO.git"
-  else
-    git -C "$REPOSITORY_DIR" remote add pr-head "https://github.com/$HEAD_OWNER/$HEAD_REPO.git"
-  fi
+if [[ "${HEAD_OWNER,,}/${HEAD_REPO,,}" != "$REPO_FULL" ]]; then
+  git -C "$REPOSITORY_DIR" remote add pr-head "https://github.com/$HEAD_OWNER/$HEAD_REPO.git"
   git -C "$REPOSITORY_DIR" fetch --no-tags pr-head "$PR_BRANCH" >/dev/null
   PUSH_REMOTE="pr-head"
 else
