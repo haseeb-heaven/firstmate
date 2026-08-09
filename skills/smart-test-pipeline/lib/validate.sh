@@ -12,11 +12,10 @@ cleanup_validation_stage() {
 
 bounded_output_drain() {
   local fifo="$1" output_file="$2" limit="$3"
-  local block_size=4096 blocks size remainder truncated=false tmp_file
-  blocks=$(( (limit + block_size - 1) / block_size ))
+  local size remainder truncated=false
   : > "$output_file"
   exec 7<"$fifo"
-  dd bs="$block_size" count="$blocks" <&7 > "$output_file" 2>/dev/null || true
+  head -c "$limit" <&7 > "$output_file" 2>/dev/null || true
   remainder=$(wc -c <&7 | tr -d ' ')
   exec 7<&-
   [[ "$remainder" =~ ^[0-9]+$ ]] || remainder=0
@@ -24,10 +23,8 @@ bounded_output_drain() {
   size=$(wc -c < "$output_file" | tr -d ' ')
   [[ "$size" =~ ^[0-9]+$ ]] || size=0
   if [[ "$size" -gt "$limit" ]]; then
-    tmp_file="${output_file}.trim.$$"
-    head -c "$limit" "$output_file" > "$tmp_file"
-    mv "$tmp_file" "$output_file"
-    truncated=true
+    echo "ERROR: bounded output drain exceeded configured limit" >&2
+    return 1
   fi
   if [[ "$truncated" == true ]]; then
     printf '\n[output truncated at %s bytes]\n' "$limit" >> "$output_file"
@@ -171,7 +168,7 @@ snapshot_path_is_forbidden() {
 
 copy_snapshot_repo() {
   local source_dir="$1" snapshot_dir="$2" include_untracked="$3"
-  local path mode parent target
+  local path mode parent target submodule_root submodule_dir
   local -a ls_args=(--cached)
   if [[ "$include_untracked" == true ]]; then
     ls_args+=(--others --exclude-standard)
@@ -187,6 +184,17 @@ copy_snapshot_repo() {
         echo "ERROR: checked-out submodule missing from validation snapshot: $path" >&2
         return 1
       }
+      submodule_dir=$(cd "$source_dir/$path" && pwd -P) || return 1
+      submodule_root=$(git -C "$source_dir/$path" rev-parse --show-toplevel 2>/dev/null || true)
+      if [[ -z "$submodule_root" ]]; then
+        echo "ERROR: submodule is not initialized in validation source: $path" >&2
+        return 1
+      fi
+      submodule_root=$(cd "$submodule_root" 2>/dev/null && pwd -P) || submodule_root=""
+      if [[ "$submodule_root" != "$submodule_dir" ]]; then
+        echo "ERROR: submodule is not initialized in validation source: $path" >&2
+        return 1
+      fi
       parent="$snapshot_dir/$path"
       mkdir -p "$parent"
       if ! copy_snapshot_repo "$source_dir/$path" "$parent" false; then
