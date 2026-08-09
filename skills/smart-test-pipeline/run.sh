@@ -207,9 +207,39 @@ else
     echo -e "${RED}ERROR: another pipeline is actively operating on $REPO_FULL PR #$PR_NUM${NC}" >&2
     exit 1
   fi
-  rm -rf "$LOCK_DIR"
+
+  # Only one process may recover a stale lock. The recovery directory lives
+  # inside the stale lock itself, so mkdir is the atomic claim; losers fail
+  # closed rather than deleting a lock another recovery just recreated.
+  recovery_claim="$LOCK_DIR/.recovery"
+  if ! mkdir -m 700 "$recovery_claim" 2>/dev/null; then
+    echo -e "${RED}ERROR: another process is recovering the stale lock for $REPO_FULL PR #$PR_NUM${NC}" >&2
+    exit 1
+  fi
+
+  # Re-read ownership after winning the recovery claim. A late publisher that
+  # became active during the grace period must be preserved.
+  lock_pid=""; lock_repo=""; lock_pr=""
+  if [[ -f "$LOCK_DIR/owner" ]]; then
+    lock_pid=$(awk -F= '$1 == "pid" { print $2 }' "$LOCK_DIR/owner")
+    lock_repo=$(awk -F= '$1 == "repo" { print tolower($2) }' "$LOCK_DIR/owner")
+    lock_pr=$(awk -F= '$1 == "pr_num" { print $2 }' "$LOCK_DIR/owner")
+  fi
+  if [[ "$lock_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$lock_pid" 2>/dev/null && [[ "$lock_repo" == "$REPO_FULL" && "$lock_pr" == "$PR_NUM" ]]; then
+    rmdir "$recovery_claim" >/dev/null 2>&1 || true
+    echo -e "${RED}ERROR: lock owner became active during stale-lock recovery${NC}" >&2
+    exit 1
+  fi
+
+  # Remove only the metadata this protocol owns. Unexpected files make
+  # recovery fail closed instead of being destroyed with rm -rf.
+  rm -f "$LOCK_DIR/owner"
+  if ! rmdir "$recovery_claim" 2>/dev/null || ! rmdir "$LOCK_DIR" 2>/dev/null; then
+    echo -e "${RED}ERROR: stale lock contains unexpected state; refusing destructive recovery${NC}" >&2
+    exit 1
+  fi
   if ! mkdir -m 700 "$LOCK_DIR" 2>/dev/null; then
-    echo -e "${RED}ERROR: unable to recover stale lock for $REPO_FULL PR #$PR_NUM${NC}" >&2
+    echo -e "${RED}ERROR: stale lock was claimed by another process during recovery${NC}" >&2
     exit 1
   fi
   LOCK_ACQUIRED=true
