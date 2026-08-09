@@ -8,49 +8,71 @@ source "$REVIEWS_LIB_DIR/colors.sh"
 collect_findings() {
   local owner="$1" repo="$2" pr_num="$3" data_dir="$4"
   echo -e "${DIM}  ${INFO} Collecting unresolved review comments...${NC}" >&2
-  local comments
-  comments=$(get_unresolved_comments "$owner" "$repo" "$pr_num") || {
+
+  local comments_file findings_lines
+  comments_file=$(mktemp "${TMPDIR:-/tmp}/smart-findings-comments.XXXXXX") || return 1
+  findings_lines=$(mktemp "${TMPDIR:-/tmp}/smart-findings-lines.XXXXXX") || { rm -f "$comments_file"; return 1; }
+  : > "$findings_lines"
+
+  if ! get_unresolved_comments "$owner" "$repo" "$pr_num" > "$comments_file"; then
+    rm -f "$comments_file" "$findings_lines"
     echo -e "${YELLOW}  ${WARN} Could not fetch review threads${NC}" >&2
     return 1
-  }
-  local findings="[]" count=0
+  fi
+
+  local count=0 comment id path line body author severity extracted_path
   while IFS= read -r comment; do
-    [[ -z "$comment" ]] && continue
-    local id path line body author severity="medium" extracted_path finding
-    id=$(echo "$comment" | jq -r '.id // empty')
-    path=$(echo "$comment" | jq -r '.path // "unknown"')
-    line=$(echo "$comment" | jq -r '.line // "null"')
-    body=$(echo "$comment" | jq -r '.body // ""')
-    author=$(echo "$comment" | jq -r '.author // "unknown"')
-    if echo "$body" | grep -q '🔴\|CRITICAL\|HIGH'; then
+    [[ -n "$comment" ]] || continue
+    id=$(jq -r '.id // empty' <<<"$comment")
+    path=$(jq -r '.path // "unknown"' <<<"$comment")
+    line=$(jq -r '.line // "null"' <<<"$comment")
+    body=$(jq -r '.body // ""' <<<"$comment")
+    author=$(jq -r '.author // "unknown"' <<<"$comment")
+    severity="medium"
+    if grep -q '🔴\|CRITICAL\|HIGH' <<<"$body"; then
       severity="high"
-    elif echo "$body" | grep -q '🟠\|MAJOR\|Medium'; then
+    elif grep -q '🟠\|MAJOR\|Medium' <<<"$body"; then
       severity="medium"
-    elif echo "$body" | grep -q '🟡\|MINOR\|Low'; then
+    elif grep -q '🟡\|MINOR\|Low' <<<"$body"; then
       severity="low"
     fi
     if [[ "$path" == "unknown" ]]; then
-      extracted_path=$(echo "$body" | grep -Eo 'backend/[^:[:space:]]+|frontend/[^:[:space:]]+|[^:[:space:]]+\.(py|ts|tsx)' | head -1)
+      extracted_path=$(grep -Eo 'backend/[^:[:space:]]+|frontend/[^:[:space:]]+|[^:[:space:]]+\.(py|ts|tsx)' <<<"$body" | head -1 || true)
       [[ -n "$extracted_path" ]] && path="$extracted_path"
     fi
-    finding=$(jq -n --arg id "$id" --arg path "$path" --arg line "$line" --arg severity "$severity" --arg body "$body" --arg source "$author" '{id:$id,path:$path,line:($line|if .=="null" then null else (. | tonumber) end),severity:$severity,body:$body,source:$source}')
-    findings=$(echo "$findings" | jq ". + [$finding]")
+
+    if ! jq -c --arg path "$path" --arg line "$line" --arg severity "$severity" --arg source "$author" '
+      {id:(.id // ""),
+       path:$path,
+       line:($line | if . == "null" then null else tonumber end),
+       severity:$severity,
+       body:(.body // ""),
+       source:$source}' <<<"$comment" >> "$findings_lines"; then
+      rm -f "$comments_file" "$findings_lines"
+      return 1
+    fi
     count=$((count + 1))
-  done <<< "$(echo "$comments" | jq -c '.[]')"
-  echo "$findings" | jq '.' > "$data_dir/findings.json"
+  done < <(jq -c '.[]' "$comments_file")
+
+  if ! jq -s '.' "$findings_lines" > "$data_dir/findings.json"; then
+    rm -f "$comments_file" "$findings_lines"
+    return 1
+  fi
+  rm -f "$comments_file" "$findings_lines"
+
   local high medium low
-  high=$(echo "$findings" | jq '[.[] | select(.severity == "high")] | length')
-  medium=$(echo "$findings" | jq '[.[] | select(.severity == "medium")] | length')
-  low=$(echo "$findings" | jq '[.[] | select(.severity == "low")] | length')
+  high=$(jq '[.[] | select(.severity == "high")] | length' "$data_dir/findings.json")
+  medium=$(jq '[.[] | select(.severity == "medium")] | length' "$data_dir/findings.json")
+  low=$(jq '[.[] | select(.severity == "low")] | length' "$data_dir/findings.json")
   echo -e "  ${INFO} Found ${BOLD}$count${NC} unresolved findings" >&2
   echo -e "    ${RED}High: $high${NC}  ${YELLOW}Medium: $medium${NC}  ${DIM}Low: $low${NC}" >&2
-  echo "$findings"
+  cat "$data_dir/findings.json"
 }
 
 get_greptile_score() {
   local owner="$1" repo="$2" pr_num="$3" score conf
   score=$(gh api -H "Accept: application/vnd.github+json" "/repos/$owner/$repo/pulls/$pr_num/comments" --jq '[.[] | select(.user.login == "greptile-apps[bot]") | .body] | last // ""' 2>/dev/null)
-  conf=$(echo "$score" | grep -Eo 'confidence[[:space:]:]+[0-9]+/[0-9]+' | grep -Eo '[0-9]+' | head -1)
+  conf=$(grep -Eo 'confidence[[:space:]:]+[0-9]+/[0-9]+' <<<"$score" | grep -Eo '[0-9]+' | head -1 || true)
   if [[ -n "$conf" ]]; then echo "$conf"; else echo "0"; fi
 }
 
@@ -72,8 +94,8 @@ capture_review_baseline() {
     esac
     review_comments=$(gh api -H "Accept: application/vnd.github+json" "/repos/$owner/$repo/pulls/$pr_num/comments" --paginate --slurp 2>/dev/null) || return 1
     issue_comments=$(gh api -H "Accept: application/vnd.github+json" "/repos/$owner/$repo/issues/$pr_num/comments" --paginate --slurp 2>/dev/null) || return 1
-    review_id=$(echo "$review_comments" | jq --arg login "$login" '[.[][] | select(.user.login == $login) | .id] | max // 0')
-    issue_id=$(echo "$issue_comments" | jq --arg login "$login" '[.[][] | select(.user.login == $login) | .id] | max // 0')
+    review_id=$(jq --arg login "$login" '[.[][] | select(.user.login == $login) | .id] | max // 0' <<<"$review_comments")
+    issue_id=$(jq --arg login "$login" '[.[][] | select(.user.login == $login) | .id] | max // 0' <<<"$issue_comments")
     echo "$bot $review_id $issue_id" >> "$baseline_file"
   done
 }
@@ -103,9 +125,9 @@ is_review_bot_done() {
   [[ -n "$review_baseline" && -n "$issue_baseline" ]] || return 1
   review_comments=$(gh api -H "Accept: application/vnd.github+json" "/repos/$owner/$repo/pulls/$pr_num/comments" --paginate --slurp 2>/dev/null) || return 1
   issue_comments=$(gh api -H "Accept: application/vnd.github+json" "/repos/$owner/$repo/issues/$pr_num/comments" --paginate --slurp 2>/dev/null) || return 1
-  review_bodies=$(echo "$review_comments" | jq -r --arg login "$login" --argjson baseline "$review_baseline" '[.[][] | select(.user.login == $login and .id > $baseline) | .body] | .[]')
-  issue_bodies=$(echo "$issue_comments" | jq -r --arg login "$login" --argjson baseline "$issue_baseline" '[.[][] | select(.user.login == $login and .id > $baseline) | .body] | .[]')
+  review_bodies=$(jq -r --arg login "$login" --argjson baseline "$review_baseline" '[.[][] | select(.user.login == $login and .id > $baseline) | .body] | .[]' <<<"$review_comments")
+  issue_bodies=$(jq -r --arg login "$login" --argjson baseline "$issue_baseline" '[.[][] | select(.user.login == $login and .id > $baseline) | .body] | .[]' <<<"$issue_comments")
   printf '%s\n%s\n' "$review_bodies" "$issue_bodies" | review_bot_has_terminal_message "$bot"
 }
 
-count_actionable() { local findings="$1"; echo "$findings" | jq 'length'; }
+count_actionable() { local findings="$1"; jq 'length' <<<"$findings"; }
