@@ -23,6 +23,8 @@ fi
 : "${AGENT_TIMEOUT:=1800}"
 : "${VALIDATION_TIMEOUT:=3600}"
 : "${VALIDATION_OUTPUT_LIMIT:=1048576}"
+: "${REVIEW_THREAD_BODY_LIMIT:=262144}"
+: "${REVIEW_FINDINGS_TOTAL_LIMIT:=4194304}"
 : "${REVIEW_BOTS:=coderabbit greptile}"
 : "${TEST_CMD:=python -m pytest --tb=short -q}"
 : "${LINT_CMD:=}"
@@ -60,23 +62,42 @@ if [[ -z "$PR_URL" ]]; then
   exit 2
 fi
 
-for numeric_setting in MAX_ITERATIONS CI_TIMEOUT CI_STABILITY_POLLS AGENT_TIMEOUT VALIDATION_TIMEOUT VALIDATION_OUTPUT_LIMIT REVIEW_TIMEOUT POLL_INTERVAL; do
+for numeric_setting in MAX_ITERATIONS CI_TIMEOUT CI_STABILITY_POLLS AGENT_TIMEOUT VALIDATION_TIMEOUT VALIDATION_OUTPUT_LIMIT REVIEW_THREAD_BODY_LIMIT REVIEW_FINDINGS_TOTAL_LIMIT REVIEW_TIMEOUT POLL_INTERVAL; do
   eval "numeric_value=\${$numeric_setting}"
   if [[ ! "$numeric_value" =~ ^[1-9][0-9]*$ ]]; then
     echo "ERROR: $numeric_setting must be a positive integer" >&2
     exit 2
   fi
 done
+if [[ ! "$PRE_REVIEW_WAIT" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: PRE_REVIEW_WAIT must be a non-negative integer" >&2
+  exit 2
+fi
 
 if [[ "$PR_URL" =~ ^https://github\.com/([^/]+)/([^/]+)/pull/([0-9]+)$ ]]; then
-  OWNER="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')"
-  REPO="$(printf '%s' "${BASH_REMATCH[2]}" | tr '[:upper:]' '[:lower:]')"
+  RAW_OWNER="${BASH_REMATCH[1]}"
+  RAW_REPO="${BASH_REMATCH[2]}"
   PR_NUM="${BASH_REMATCH[3]}"
 else
   echo "ERROR: not a valid GitHub PR URL: $PR_URL" >&2
   exit 2
 fi
 
+if [[ "$RAW_OWNER" == "." || "$RAW_OWNER" == ".." || "$RAW_REPO" == "." || "$RAW_REPO" == ".." ]]; then
+  echo "ERROR: GitHub owner/repository segments may not be '.' or '..'" >&2
+  exit 2
+fi
+if [[ ! "$RAW_OWNER" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then
+  echo "ERROR: invalid GitHub owner segment: $RAW_OWNER" >&2
+  exit 2
+fi
+if [[ ! "$RAW_REPO" =~ ^[A-Za-z0-9._-]+$ || ${#RAW_REPO} -gt 100 ]]; then
+  echo "ERROR: invalid GitHub repository segment: $RAW_REPO" >&2
+  exit 2
+fi
+
+OWNER="$(printf '%s' "$RAW_OWNER" | tr '[:upper:]' '[:lower:]')"
+REPO="$(printf '%s' "$RAW_REPO" | tr '[:upper:]' '[:lower:]')"
 REPO_FULL="$OWNER/$REPO"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}"
 REPO_ROOT="$CACHE_ROOT/$OWNER/$REPO"
@@ -257,7 +278,7 @@ LOCAL_BRANCH="detached-pr-$PR_NUM-$RUN_ID"
 
 export PR_URL OWNER REPO PR_NUM REPO_FULL BRANCH LOCAL_BRANCH WORKTREE_DIR DATA_DIR PUSH_REMOTE
 export BASE_BRANCH BASE_SHA HEAD_SHA REPOSITORY_DIR RUN_ROOT RUN_ID
-export MAX_ITERATIONS FIX_AGENT WAIT_CI DRY_RUN FORCE_PUSH CI_TIMEOUT CI_STABILITY_POLLS AGENT_TIMEOUT VALIDATION_TIMEOUT VALIDATION_OUTPUT_LIMIT REVIEW_BOTS TEST_CMD LINT_CMD
+export MAX_ITERATIONS FIX_AGENT WAIT_CI DRY_RUN FORCE_PUSH CI_TIMEOUT CI_STABILITY_POLLS AGENT_TIMEOUT VALIDATION_TIMEOUT VALIDATION_OUTPUT_LIMIT REVIEW_THREAD_BODY_LIMIT REVIEW_FINDINGS_TOTAL_LIMIT REVIEW_BOTS TEST_CMD LINT_CMD
 export PRE_REVIEW_WAIT REVIEW_TIMEOUT POLL_INTERVAL ALLOWED_SUPPORT_GLOBS VALIDATION_SANDBOX AGENT_SANDBOX
 
 source "$SCRIPT_DIR/lib/loop.sh"
