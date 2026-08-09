@@ -136,6 +136,14 @@ release_pr_lock() {
   fi
 }
 
+publish_lock_owner() {
+  local owner_tmp="$LOCK_DIR/owner.tmp.$$.$RANDOM"
+  printf 'pid=%s\nrepo=%s\npr_num=%s\nrun_id=%s\nstarted=%s\n' \
+    "$$" "$REPO_FULL" "$PR_NUM" "$RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$owner_tmp"
+  chmod 600 "$owner_tmp"
+  mv "$owner_tmp" "$LOCK_DIR/owner"
+}
+
 cleanup() {
   local rc=$?
   local disposable=false
@@ -185,9 +193,19 @@ if ! gh auth status >/dev/null 2>&1; then
   exit 1
 fi
 
+GH_EXECUTABLE_BOOTSTRAP=$(command -v gh 2>/dev/null || true)
+case "$GH_EXECUTABLE_BOOTSTRAP" in
+  /*) ;;
+  '') echo -e "${RED}ERROR: GitHub CLI executable could not be resolved${NC}" >&2; exit 1 ;;
+  *) GH_EXECUTABLE_BOOTSTRAP="$(cd "$(dirname "$GH_EXECUTABLE_BOOTSTRAP")" && pwd -P)/$(basename "$GH_EXECUTABLE_BOOTSTRAP")" ;;
+esac
+[[ -x "$GH_EXECUTABLE_BOOTSTRAP" ]] || { echo -e "${RED}ERROR: GitHub CLI executable is not usable${NC}" >&2; exit 1; }
+printf -v GIT_GH_HELPER '!%q auth git-credential' "$GH_EXECUTABLE_BOOTSTRAP"
+
 mkdir -p -m 700 "$REPO_ROOT/locks" "$RUN_ROOT"
 if mkdir -m 700 "$LOCK_DIR" 2>/dev/null; then
   LOCK_ACQUIRED=true
+  publish_lock_owner
 else
   for _ in 1 2 3 4 5; do
     [[ -f "$LOCK_DIR/owner" ]] && break
@@ -208,17 +226,15 @@ else
     exit 1
   fi
 
-  # Only one process may recover a stale lock. The recovery directory lives
-  # inside the stale lock itself, so mkdir is the atomic claim; losers fail
-  # closed rather than deleting a lock another recovery just recreated.
+  # Recovery is claimed inside the existing lock directory and ownership is
+  # published before that recovery claim is released. This removes the prior
+  # ownerless recreate gap where a second contender could reclaim the lock.
   recovery_claim="$LOCK_DIR/.recovery"
   if ! mkdir -m 700 "$recovery_claim" 2>/dev/null; then
     echo -e "${RED}ERROR: another process is recovering the stale lock for $REPO_FULL PR #$PR_NUM${NC}" >&2
     exit 1
   fi
 
-  # Re-read ownership after winning the recovery claim. A late publisher that
-  # became active during the grace period must be preserved.
   lock_pid=""; lock_repo=""; lock_pr=""
   if [[ -f "$LOCK_DIR/owner" ]]; then
     lock_pid=$(awk -F= '$1 == "pid" { print $2 }' "$LOCK_DIR/owner")
@@ -231,25 +247,26 @@ else
     exit 1
   fi
 
-  # Remove only the metadata this protocol owns. Unexpected files make
-  # recovery fail closed instead of being destroyed with rm -rf.
-  rm -f "$LOCK_DIR/owner"
-  if ! rmdir "$recovery_claim" 2>/dev/null || ! rmdir "$LOCK_DIR" 2>/dev/null; then
+  unexpected_lock_entry=$(find "$LOCK_DIR" -mindepth 1 -maxdepth 1 ! -name owner ! -name .recovery -print -quit 2>/dev/null || true)
+  if [[ -n "$unexpected_lock_entry" ]]; then
+    rmdir "$recovery_claim" >/dev/null 2>&1 || true
     echo -e "${RED}ERROR: stale lock contains unexpected state; refusing destructive recovery${NC}" >&2
     exit 1
   fi
-  if ! mkdir -m 700 "$LOCK_DIR" 2>/dev/null; then
-    echo -e "${RED}ERROR: stale lock was claimed by another process during recovery${NC}" >&2
+
+  rm -f "$LOCK_DIR/owner"
+  LOCK_ACQUIRED=true
+  if ! publish_lock_owner; then
+    LOCK_ACQUIRED=false
+    rmdir "$recovery_claim" >/dev/null 2>&1 || true
+    echo -e "${RED}ERROR: failed to publish recovered lock ownership${NC}" >&2
     exit 1
   fi
-  LOCK_ACQUIRED=true
+  if ! rmdir "$recovery_claim" 2>/dev/null; then
+    echo -e "${RED}ERROR: recovered lock contains unexpected state${NC}" >&2
+    exit 1
+  fi
 fi
-
-owner_tmp="$LOCK_DIR/owner.tmp.$$.$RANDOM"
-printf 'pid=%s\nrepo=%s\npr_num=%s\nrun_id=%s\nstarted=%s\n' \
-  "$$" "$REPO_FULL" "$PR_NUM" "$RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$owner_tmp"
-chmod 600 "$owner_tmp"
-mv "$owner_tmp" "$LOCK_DIR/owner"
 
 PR_METADATA="$(gh pr view "$PR_NUM" --repo "$REPO_FULL" --json state,headRefName,headRepositoryOwner,headRepository,baseRefName,baseRefOid,headRefOid 2>/dev/null)" || {
   echo -e "${RED}ERROR: unable to read PR metadata${NC}" >&2
@@ -275,11 +292,12 @@ fi
 mkdir -p -m 700 "$REPO_ROOT/worktrees" "$RUN_ROOT"
 clone_dir="$RUN_ROOT/repository.partial"
 rm -rf "$clone_dir"
-git -c credential.helper='!gh auth git-credential' clone --no-checkout "https://github.com/$REPO_FULL.git" "$clone_dir" >/dev/null
+git -c credential.helper= -c "credential.helper=$GIT_GH_HELPER" clone --no-checkout "https://github.com/$REPO_FULL.git" "$clone_dir" >/dev/null
 mv "$clone_dir" "$REPOSITORY_DIR"
 git -C "$REPOSITORY_DIR" config user.name "Smart Test Pipeline"
 git -C "$REPOSITORY_DIR" config user.email "smart-test-pipeline@localhost"
-git -C "$REPOSITORY_DIR" config credential.helper '!gh auth git-credential'
+git -C "$REPOSITORY_DIR" config --unset-all credential.helper >/dev/null 2>&1 || true
+git -C "$REPOSITORY_DIR" config --add credential.helper "$GIT_GH_HELPER"
 
 git -C "$REPOSITORY_DIR" fetch --no-tags -- origin "$BASE_BRANCH" >/dev/null
 HEAD_REPO_KEY="$(printf '%s/%s' "$HEAD_OWNER" "$HEAD_REPO" | tr '[:upper:]' '[:lower:]')"
@@ -302,7 +320,9 @@ if ! git -C "$REPOSITORY_DIR" merge-base "$BASE_SHA" "$HEAD_SHA" >/dev/null; the
   exit 1
 fi
 
-git -C "$REPOSITORY_DIR" worktree add --detach "$WORKTREE_DIR" "$HEAD_SHA" >/dev/null
+GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+  git -C "$REPOSITORY_DIR" -c core.hooksPath=/dev/null -c commit.gpgSign=false \
+    worktree add --detach "$WORKTREE_DIR" "$HEAD_SHA" >/dev/null
 WORKTREE_CLEANUP=true
 BRANCH="$PR_BRANCH"
 LOCAL_BRANCH="detached-pr-$PR_NUM-$RUN_ID"
