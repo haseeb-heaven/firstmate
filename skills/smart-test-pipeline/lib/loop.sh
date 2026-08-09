@@ -50,10 +50,14 @@ pr_head_matches_worktree() {
   [[ "$remote_head" == "$(get_current_sha)" ]]
 }
 
+ci_findings_from_file() {
+  local failure_file="$1"
+  [[ -s "$failure_file" ]] || { echo '[]'; return 0; }
+  jq -n --arg body "$(cat "$failure_file")" '[{id:"ci-failure",path:"unknown",line:null,severity:"high",body:$body,source:"github-ci"}]'
+}
+
 ci_findings() {
-  local previous="$DATA_DIR/iterations/$((ITERATION - 1))/ci-failures.md"
-  [[ -s "$previous" ]] || { echo '[]'; return 0; }
-  jq -n --arg body "$(cat "$previous")" '[{id:"ci-failure",path:"unknown",line:null,severity:"high",body:$body,source:"github-ci"}]'
+  ci_findings_from_file "$DATA_DIR/iterations/$((ITERATION - 1))/ci-failures.md"
 }
 
 validation_findings() {
@@ -71,8 +75,16 @@ validation_findings() {
 }
 
 preflight_agent() {
+  case "$FIX_AGENT" in
+    pi|claude|codex|opencode) ;;
+    *) echo "ERROR: unsupported fix agent '$FIX_AGENT'; refusing to trigger review bots" >&2; return 1 ;;
+  esac
   command -v "$FIX_AGENT" >/dev/null 2>&1 || {
     echo "ERROR: fix agent '$FIX_AGENT' is not installed; refusing to trigger review bots" >&2
+    return 1
+  }
+  agent_provider_env "$FIX_AGENT" >/dev/null || {
+    echo "ERROR: fix agent '$FIX_AGENT' has no supported provider configuration" >&2
     return 1
   }
   case "${AGENT_SANDBOX:-auto}" in
@@ -85,9 +97,17 @@ preflight_agent() {
   esac
 }
 
+finish_head_changed() {
+  local iteration="$1" findings_file="$2"
+  echo "ERROR: PR head changed during guarded validation; refusing to report a stale result" >&2
+  PIPELINE_RESULT="head_changed"
+  write_iteration_report "$DATA_DIR" "$iteration" "$findings_file"
+  write_final_report "$DATA_DIR" "$iteration" "$PIPELINE_RESULT"
+  return 1
+}
+
 run_pipeline() {
-  mkdir -p "$DATA_DIR/iterations" "$RUN_ROOT/agent-home" "$RUN_ROOT/agent-tmp" \
-    "$DATA_DIR/sandbox-home" "$DATA_DIR/sandbox-tmp"
+  mkdir -p "$DATA_DIR/iterations" "$RUN_ROOT/agent-home" "$RUN_ROOT/agent-tmp"
   if [[ "$DRY_RUN" == true ]]; then
     PIPELINE_RESULT="dry_run"
     write_final_report "$DATA_DIR" 0 "$PIPELINE_RESULT"
@@ -103,7 +123,7 @@ run_pipeline() {
     local iter_dir="$DATA_DIR/iterations/$ITERATION"
     rm -rf "$iter_dir"
     mkdir -p "$iter_dir"
-    local findings findings_file
+    local findings findings_file actionable
     findings=$(collect_findings "$OWNER" "$REPO" "$PR_NUM" "$iter_dir") || {
       PIPELINE_RESULT="review_blocked"; write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"; return 1;
     }
@@ -117,31 +137,41 @@ run_pipeline() {
     fi
     findings_file="$iter_dir/findings.json"
     jq '.' <<<"$findings" > "$findings_file"
-    local actionable
     actionable=$(count_actionable "$findings")
+
     if [[ "$actionable" -eq 0 ]]; then
-      if [[ "$CI_BLOCKED" != true ]] && ! pr_head_matches_worktree; then
-        echo "ERROR: PR head changed after validation; refusing to report a stale clean result" >&2
-        PIPELINE_RESULT="head_changed"
-        write_iteration_report "$DATA_DIR" "$ITERATION" "$findings_file"
-        write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"
+      if ! pr_head_matches_worktree; then
+        finish_head_changed "$ITERATION" "$findings_file"
         return 1
       fi
       if [[ "$WAIT_CI" == true && "$CI_BLOCKED" != true ]]; then
         if wait_for_ci "$OWNER" "$REPO" "$(get_current_sha)" "$CI_TIMEOUT" "$DATA_DIR" "$ITERATION"; then
           CI_BLOCKED=false
+          if ! pr_head_matches_worktree; then
+            finish_head_changed "$ITERATION" "$findings_file"
+            return 1
+          fi
         else
           CI_BLOCKED=true
+          findings=$(jq -s '.[0] + .[1]' \
+            <(printf '%s\n' "$findings") \
+            <(ci_findings_from_file "$iter_dir/ci-failures.md"))
+          jq '.' <<<"$findings" > "$findings_file"
+          actionable=$(count_actionable "$findings")
         fi
       fi
-      if [[ "$CI_BLOCKED" == true ]]; then
-        PIPELINE_RESULT="ci_blocked"
-      else
-        PIPELINE_RESULT="clean"
+      if [[ "$actionable" -eq 0 ]]; then
+        if [[ "$CI_BLOCKED" == true ]]; then
+          PIPELINE_RESULT="ci_blocked"
+        elif [[ "$VALIDATION_BLOCKED" == true ]]; then
+          PIPELINE_RESULT="validation_blocked"
+        else
+          PIPELINE_RESULT="clean"
+        fi
+        write_iteration_report "$DATA_DIR" "$ITERATION" "$findings_file"
+        write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"
+        [[ "$PIPELINE_RESULT" == clean ]] && return 0 || return 1
       fi
-      write_iteration_report "$DATA_DIR" "$ITERATION" "$findings_file"
-      write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"
-      [[ "$PIPELINE_RESULT" == clean ]] && return 0 || return 1
     fi
 
     local brief_file agent_base_sha allowed_file
@@ -200,6 +230,10 @@ run_pipeline() {
     if [[ "$WAIT_CI" == true ]]; then
       if wait_for_ci "$OWNER" "$REPO" "$(get_current_sha)" "$CI_TIMEOUT" "$DATA_DIR" "$ITERATION"; then
         CI_BLOCKED=false
+        if ! pr_head_matches_worktree; then
+          finish_head_changed "$ITERATION" "$findings_file"
+          return 1
+        fi
       else
         CI_BLOCKED=true
       fi
@@ -211,8 +245,6 @@ run_pipeline() {
     wait_for_reviews || { PIPELINE_RESULT="review_blocked"; write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"; return 1; }
   done
 
-  # The terminal review is deliberately kept outside iterations/$MAX_ITERATIONS
-  # so collecting it cannot overwrite the final fix pass's findings or results.
   local final_dir="$DATA_DIR/final-review" final_findings final_findings_file
   rm -rf "$final_dir"
   mkdir -p "$final_dir"
@@ -223,13 +255,20 @@ run_pipeline() {
   }
   final_findings_file="$final_dir/findings.json"
   jq '.' <<<"$final_findings" > "$final_findings_file"
-  if [[ "$CI_BLOCKED" != true ]] && [[ "$(count_actionable "$final_findings")" -eq 0 ]] && pr_head_matches_worktree; then
+  if [[ "$CI_BLOCKED" != true && "$VALIDATION_BLOCKED" != true ]] && \
+     [[ "$(count_actionable "$final_findings")" -eq 0 ]] && pr_head_matches_worktree; then
     PIPELINE_RESULT="clean"
     write_final_report "$DATA_DIR" "$MAX_ITERATIONS" "$PIPELINE_RESULT"
     return 0
   fi
 
-  PIPELINE_RESULT="$([[ "$CI_BLOCKED" == true ]] && echo ci_blocked || echo max_iterations)"
+  if [[ "$CI_BLOCKED" == true ]]; then
+    PIPELINE_RESULT="ci_blocked"
+  elif [[ "$VALIDATION_BLOCKED" == true ]]; then
+    PIPELINE_RESULT="validation_blocked"
+  else
+    PIPELINE_RESULT="max_iterations"
+  fi
   write_final_report "$DATA_DIR" "$MAX_ITERATIONS" "$PIPELINE_RESULT"
   return 1
 }
