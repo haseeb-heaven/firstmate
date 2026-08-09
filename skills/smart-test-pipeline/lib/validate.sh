@@ -45,9 +45,6 @@ run_validation_captured() {
   drain_pid=$!
   "$@" > "$fifo" 2>&1 || rc=$?
 
-  # The command runner is responsible for terminating its complete process
-  # group. Bound the drain wait as defense in depth so a leaked writer cannot
-  # keep the pipeline blocked forever.
   local _
   for _ in 1 2 3 4 5; do
     kill -0 "$drain_pid" 2>/dev/null || break
@@ -148,15 +145,15 @@ run_validation_command() (
     return 2
   }
 
-  # Monitor mode gives the background validation job its own process group,
-  # even when the command is a sourced shell function such as run_sandboxed.
-  # That lets timeout/cleanup terminate descendants recursively in one signal.
   set -m
   "$@" &
   child=$!
   set +m
 
-  pgid=$(ps -o pgid= -p "$child" 2>/dev/null | tr -d '[:space:]')
+  # For a single job started with monitor mode, Bash uses the job leader PID as
+  # its process-group ID. Capture it from $! immediately; the leader can exit
+  # before ps observes it while descendants still keep the group/FIFO alive.
+  pgid="$child"
   shell_pgid=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d '[:space:]')
   if [[ ! "$pgid" =~ ^[1-9][0-9]*$ || "$pgid" == "$shell_pgid" ]]; then
     echo "ERROR: unable to isolate validation process group safely" >&2
@@ -183,8 +180,6 @@ run_validation_command() (
   kill -TERM "$watcher" 2>/dev/null || true
   wait "$watcher" 2>/dev/null || true
 
-  # The root may exit while a daemon/grandchild still owns stdout/FIFO. Always
-  # tear down any remaining members before returning to the capture layer.
   if kill -0 -- "-$pgid" 2>/dev/null; then
     terminate_validation_group TERM
     sleep 1
