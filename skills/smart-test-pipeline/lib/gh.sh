@@ -35,8 +35,12 @@ get_unresolved_comments() {
     [[ -n "$cursor" && "$cursor" != null ]] || return 1
   done
   jq '[.[] | select(.isResolved == false and .isOutdated == false) | . as $thread
-    | $thread.comments.nodes[-1] | select(. != null)
-    | {id: ($thread.id // "thread"), path: (.path // "unknown"), line: (.line // .originalLine), body: (.body // ""), author: (.author.login // "unknown")} ]' <<<"$nodes"
+    | ($thread.comments.nodes // []) | select(length > 0)
+    | {id: ($thread.id // "thread"),
+       path: (.[0].path // "unknown"),
+       line: (.[0].line // .[0].originalLine),
+       body: (map((.author.login // "unknown") + ":\n" + (.body // "")) | join("\n\n---\n\n")),
+       author: (.[0].author.login // "unknown")} ]' <<<"$nodes"
 }
 
 capture_review_baseline() {

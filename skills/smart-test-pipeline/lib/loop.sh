@@ -12,6 +12,7 @@ source "$LOOP_LIB_DIR/report.sh"
 
 PIPELINE_RESULT="failed"
 CI_BLOCKED=false
+VALIDATION_BLOCKED=false
 ITERATION=0
 
 trigger_reviews() {
@@ -51,8 +52,22 @@ pr_head_matches_worktree() {
 
 ci_findings() {
   local previous="$DATA_DIR/iterations/$((ITERATION - 1))/ci-failures.md"
-  [[ -s "$previous" ]] || return 0
+  [[ -s "$previous" ]] || { echo '[]'; return 0; }
   jq -n --arg body "$(cat "$previous")" '[{id:"ci-failure",path:"unknown",line:null,severity:"high",body:$body,source:"github-ci"}]'
+}
+
+validation_findings() {
+  local previous="$DATA_DIR/iterations/$((ITERATION - 1))" body=""
+  for failure in test-failures.txt lint-failures.txt; do
+    if [[ -s "$previous/$failure" ]]; then
+      body+="## $failure\n$(cat "$previous/$failure")\n"
+    fi
+  done
+  if [[ -n "$body" ]]; then
+    jq -n --arg body "$body" '[{id:"local-validation",path:"unknown",line:null,severity:"high",body:$body,source:"local-validation"}]'
+  else
+    echo '[]'
+  fi
 }
 
 preflight_agent() {
@@ -93,8 +108,13 @@ run_pipeline() {
     findings=$(collect_findings "$OWNER" "$REPO" "$PR_NUM" "$iter_dir") || {
       PIPELINE_RESULT="review_blocked"; write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"; return 1;
     }
-    if [[ "$CI_BLOCKED" == true && "$(jq 'length' <<<"$findings")" -eq 0 ]]; then
-      findings=$(jq -s '.[0] + .[1]' <(printf '%s\n' "$findings") <(ci_findings))
+    if [[ "$(jq 'length' <<<"$findings")" -eq 0 ]]; then
+      if [[ "$CI_BLOCKED" == true ]]; then
+        findings=$(jq -s '.[0] + .[1]' <(printf '%s\n' "$findings") <(ci_findings))
+      fi
+      if [[ "$VALIDATION_BLOCKED" == true ]]; then
+        findings=$(jq -s '.[0] + .[1]' <(printf '%s\n' "$findings") <(validation_findings))
+      fi
     fi
     findings_file="$iter_dir/findings.json"
     jq '.' <<<"$findings" > "$findings_file"
@@ -144,7 +164,7 @@ run_pipeline() {
     if [[ "$validation_failed" == true ]]; then
       write_iteration_report "$DATA_DIR" "$ITERATION" "$findings_file"
       append_results "$DATA_DIR" "$ITERATION"
-      CI_BLOCKED=true
+      VALIDATION_BLOCKED=true
       continue
     fi
 
@@ -178,6 +198,7 @@ run_pipeline() {
         CI_BLOCKED=true
       fi
     fi
+    VALIDATION_BLOCKED=false
     write_iteration_report "$DATA_DIR" "$ITERATION" "$findings_file"
     append_results "$DATA_DIR" "$ITERATION"
     trigger_reviews || { PIPELINE_RESULT="review_blocked"; write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"; return 1; }

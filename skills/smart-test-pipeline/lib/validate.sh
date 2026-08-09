@@ -21,8 +21,9 @@ run_tests() {
   fi
   AGENT_ENV_ALLOWLIST=""
   export AGENT_ENV_ALLOWLIST
-  run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$snapshot_dir" "$data_dir/sandbox-home" "$data_dir/sandbox-tmp" false \
-    bash -c "$test_cmd" >"$output_file" 2>&1 || rc=$?
+  run_validation_command "${VALIDATION_TIMEOUT:-3600}" \
+    run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$snapshot_dir" "$data_dir/sandbox-home" "$data_dir/sandbox-tmp" \
+    false bash -c "$test_cmd" >"$output_file" 2>&1 || rc=$?
   AGENT_ENV_ALLOWLIST="$saved_agent_env"
   export AGENT_ENV_ALLOWLIST
   if [[ $rc -ne 0 ]]; then
@@ -50,8 +51,9 @@ run_lint() {
   fi
   AGENT_ENV_ALLOWLIST=""
   export AGENT_ENV_ALLOWLIST
-  run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$snapshot_dir" "$data_dir/sandbox-home" "$data_dir/sandbox-tmp" false \
-    bash -c "$lint_cmd" >"$output_file" 2>&1 || rc=$?
+  run_validation_command "${VALIDATION_TIMEOUT:-3600}" \
+    run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$snapshot_dir" "$data_dir/sandbox-home" "$data_dir/sandbox-tmp" \
+    false bash -c "$lint_cmd" >"$output_file" 2>&1 || rc=$?
   AGENT_ENV_ALLOWLIST="$saved_agent_env"
   export AGENT_ENV_ALLOWLIST
   if [[ $rc -ne 0 ]]; then
@@ -61,6 +63,28 @@ run_lint() {
   fi
   rm -f "$failure_file"
   echo -e "${GREEN}  ${CHECK} Lint passed${NC}"
+}
+
+run_validation_command() {
+  local seconds="$1"; shift
+  local child watcher rc
+  "$@" &
+  child=$!
+  (
+    trap 'exit 0' TERM INT
+    sleep "$seconds"
+    kill -TERM "$child" 2>/dev/null || true
+    pkill -TERM -P "$child" 2>/dev/null || true
+    sleep 1
+    kill -KILL "$child" 2>/dev/null || true
+    pkill -KILL -P "$child" 2>/dev/null || true
+  ) &
+  watcher=$!
+  if wait "$child"; then rc=0; else rc=$?; fi
+  kill -TERM "$watcher" 2>/dev/null || true
+  pkill -TERM -P "$watcher" 2>/dev/null || true
+  wait "$watcher" 2>/dev/null || true
+  return "$rc"
 }
 
 prepare_validation_snapshot() {
@@ -89,6 +113,19 @@ prepare_validation_snapshot() {
         fi
         ;;
     esac
+    if [[ "$(git -C "$source_dir" ls-files --stage -- "$path" | awk 'NR == 1 { print $1 }')" == 160000 ]]; then
+      [[ -d "$source_dir/$path" ]] || {
+        echo "ERROR: checked-out submodule missing from validation snapshot: $path" >&2
+        return 1
+      }
+      parent="$snapshot_dir/$path"
+      mkdir -p "$parent"
+      git -C "$source_dir/$path" archive --format=tar HEAD | tar -xf - -C "$parent" || {
+        echo "ERROR: unable to archive submodule in validation snapshot: $path" >&2
+        return 1
+      }
+      continue
+    fi
     if [[ -L "$source_dir/$path" ]]; then
       target=$(readlink "$source_dir/$path")
       [[ "$target" != /* && "$target" != ../* && "$target" != */../* ]] || {

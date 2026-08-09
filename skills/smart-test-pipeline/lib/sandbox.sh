@@ -68,7 +68,7 @@ _run_sandboxed_impl() {
   local command=("$@")
   local provider_hosts="${AGENT_PROVIDER_HOSTS:-}"
   local path_value="${PATH:-/usr/bin:/bin}"
-  local -a clean_env=(env -i "PATH=$path_value" "HOME=$home_dir" "PWD=$worktree"
+  local -a clean_env=(env -i "PATH=$path_value" "HOME=$home_dir" "PWD=$worktree" "TMPDIR=$temp_dir"
     "GIT_CONFIG_NOSYSTEM=1" "GIT_CONFIG_GLOBAL=/dev/null" "GIT_CONFIG_SYSTEM=/dev/null"
     "GIT_TERMINAL_PROMPT=0" "GIT_SSH_COMMAND=ssh -oIdentityAgent=none -oIdentitiesOnly=yes")
   while IFS= read -r -d '' item; do clean_env+=("$item"); done < <(copy_allowed_env "${AGENT_ENV_ALLOWLIST:-}")

@@ -76,43 +76,32 @@ spawn_fix_agent() {
   local -a argv=()
   while IFS= read -r -d '' arg; do argv+=("$arg"); done < <(agent_command "$agent" "$brief_file")
   echo -e "${CYAN}  ${PLAY} Running $agent in the restricted agent boundary${NC}"
-  local timeout_seconds="${AGENT_TIMEOUT:-1800}" timeout_bin=""
+  local timeout_seconds="${AGENT_TIMEOUT:-1800}"
   [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] || {
     echo "ERROR: AGENT_TIMEOUT must be a positive integer" >&2
     return 2
   }
-  if command -v timeout >/dev/null 2>&1; then
-    timeout_bin="$(command -v timeout)"
-  elif command -v gtimeout >/dev/null 2>&1; then
-    timeout_bin="$(command -v gtimeout)"
-  else
-    # macOS does not ship GNU timeout. Keep a portable watchdog fallback so
-    # the lock cannot be held forever, and terminate the sandbox process and
-    # its direct children on expiry.
-    run_with_timeout() {
-      local seconds="$1"; shift
-      "$@" &
-      local child=$! watcher rc
-      (
-        sleep "$seconds"
-        kill -TERM "$child" 2>/dev/null || true
-        pkill -TERM -P "$child" 2>/dev/null || true
-        sleep 1
-        kill -KILL "$child" 2>/dev/null || true
-        pkill -KILL -P "$child" 2>/dev/null || true
-      ) &
-      watcher=$!
-      wait "$child"; rc=$?
-      kill "$watcher" 2>/dev/null || true
-      pkill -TERM -P "$watcher" 2>/dev/null || true
-      wait "$watcher" 2>/dev/null || true
-      return "$rc"
-    }
-    run_with_timeout "$timeout_seconds" \
-      run_sandboxed "${AGENT_SANDBOX:-auto}" "$worktree_dir" "$home_dir" "$temp_dir" true "${argv[@]}" < "$brief_file"
-    return $?
-  fi
-  "$timeout_bin" --foreground "$timeout_seconds" \
+  run_with_timeout() {
+    local seconds="$1"; shift
+    "$@" &
+    local child=$! watcher rc
+    (
+      trap 'exit 0' TERM INT
+      sleep "$seconds"
+      kill -TERM "$child" 2>/dev/null || true
+      pkill -TERM -P "$child" 2>/dev/null || true
+      sleep 1
+      kill -KILL "$child" 2>/dev/null || true
+      pkill -KILL -P "$child" 2>/dev/null || true
+    ) &
+    watcher=$!
+    if wait "$child"; then rc=0; else rc=$?; fi
+    kill -TERM "$watcher" 2>/dev/null || true
+    pkill -TERM -P "$watcher" 2>/dev/null || true
+    wait "$watcher" 2>/dev/null || true
+    return "$rc"
+  }
+  run_with_timeout "$timeout_seconds" \
     run_sandboxed "${AGENT_SANDBOX:-auto}" "$worktree_dir" "$home_dir" "$temp_dir" true "${argv[@]}" < "$brief_file"
 }
 

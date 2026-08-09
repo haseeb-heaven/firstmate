@@ -22,6 +22,7 @@ fi
 : "${FORCE_PUSH:=false}"
 : "${CI_TIMEOUT:=3600}"
 : "${AGENT_TIMEOUT:=1800}"
+: "${VALIDATION_TIMEOUT:=3600}"
 : "${REVIEW_BOTS:=coderabbit greptile}"
 : "${TEST_CMD:=python -m pytest --tb=short -q}"
 : "${LINT_CMD:=}"
@@ -129,10 +130,22 @@ fi
 
 mkdir -p "$REPO_ROOT/locks" "$RUN_ROOT"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  echo -e "${RED}ERROR: another pipeline is already operating on $REPO_FULL PR #$PR_NUM${NC}" >&2
-  exit 1
+  lock_pid=""
+  [[ -f "$LOCK_DIR/owner" ]] && lock_pid=$(awk -F= '$1 == "pid" { print $2 }' "$LOCK_DIR/owner")
+  lock_active=false
+  if [[ "$lock_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$lock_pid" 2>/dev/null; then
+    lock_command=$(ps -p "$lock_pid" -o command= 2>/dev/null || true)
+    [[ "$lock_command" == *"$PR_URL"* ]] && lock_active=true
+  fi
+  if [[ "$lock_active" == true ]]; then
+    echo -e "${RED}ERROR: another pipeline is actively operating on $REPO_FULL PR #$PR_NUM${NC}" >&2
+    exit 1
+  fi
+  rm -rf "$LOCK_DIR"
+  mkdir "$LOCK_DIR" || { echo -e "${RED}ERROR: unable to recover stale lock for $REPO_FULL PR #$PR_NUM${NC}" >&2; exit 1; }
 fi
 LOCK_ACQUIRED=true
+printf 'pid=%s\npr=%s\nstarted=%s\n' "$$" "$PR_URL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOCK_DIR/owner"
 
 PR_METADATA="$(gh pr view "$PR_NUM" --repo "$REPO_FULL" --json state,headRefName,headRepositoryOwner,headRepository,baseRefName,baseRefOid,headRefOid 2>/dev/null)" || {
   echo -e "${RED}ERROR: unable to read PR metadata${NC}" >&2
@@ -160,6 +173,8 @@ clone_dir="$RUN_ROOT/repository.partial"
 rm -rf "$clone_dir"
 git clone --no-checkout "https://github.com/$REPO_FULL.git" "$clone_dir" >/dev/null
 mv "$clone_dir" "$REPOSITORY_DIR"
+git -C "$REPOSITORY_DIR" config user.name "Smart Test Pipeline"
+git -C "$REPOSITORY_DIR" config user.email "smart-test-pipeline@localhost"
 
 git -C "$REPOSITORY_DIR" fetch --no-tags origin "$BASE_BRANCH" >/dev/null
 if [[ "$HEAD_OWNER/$HEAD_REPO" != "$REPO_FULL" ]]; then
@@ -192,7 +207,7 @@ LOCAL_BRANCH="detached-pr-$PR_NUM-$RUN_ID"
 
 export PR_URL OWNER REPO PR_NUM REPO_FULL BRANCH LOCAL_BRANCH WORKTREE_DIR DATA_DIR PUSH_REMOTE
 export BASE_BRANCH BASE_SHA HEAD_SHA REPOSITORY_DIR RUN_ROOT RUN_ID
-export MAX_ITERATIONS FIX_AGENT WAIT_CI DRY_RUN FORCE_PUSH CI_TIMEOUT AGENT_TIMEOUT REVIEW_BOTS TEST_CMD LINT_CMD
+export MAX_ITERATIONS FIX_AGENT WAIT_CI DRY_RUN FORCE_PUSH CI_TIMEOUT AGENT_TIMEOUT VALIDATION_TIMEOUT REVIEW_BOTS TEST_CMD LINT_CMD
 export PRE_REVIEW_WAIT REVIEW_TIMEOUT POLL_INTERVAL ALLOWED_SUPPORT_GLOBS VALIDATION_SANDBOX AGENT_SANDBOX
 
 source "$SCRIPT_DIR/lib/loop.sh"
