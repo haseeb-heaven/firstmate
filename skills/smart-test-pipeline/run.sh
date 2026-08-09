@@ -94,6 +94,21 @@ worktree_is_clean() {
   [[ -z "$(git -C "$WORKTREE_DIR" status --porcelain=v1 --untracked-files=all --ignored=matching)" ]]
 }
 
+release_pr_lock() {
+  [[ "${LOCK_ACQUIRED:-false}" == true && -n "${LOCK_DIR:-}" && -d "$LOCK_DIR" ]] || return 0
+  local owner_file="$LOCK_DIR/owner" owner_pid="" owner_repo="" owner_pr="" owner_run=""
+  if [[ -f "$owner_file" ]]; then
+    owner_pid=$(awk -F= '$1 == "pid" { print $2 }' "$owner_file")
+    owner_repo=$(awk -F= '$1 == "repo" { print tolower($2) }' "$owner_file")
+    owner_pr=$(awk -F= '$1 == "pr_num" { print $2 }' "$owner_file")
+    owner_run=$(awk -F= '$1 == "run_id" { print $2 }' "$owner_file")
+    if [[ "$owner_pid" == "$$" && "$owner_repo" == "$REPO_FULL" && "$owner_pr" == "$PR_NUM" && "$owner_run" == "$RUN_ID" ]]; then
+      rm -f "$owner_file"
+      rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
 cleanup() {
   local rc=$?
   local disposable=false
@@ -107,9 +122,7 @@ cleanup() {
       rm -rf "$REPOSITORY_DIR"
     fi
   fi
-  if [[ "${LOCK_ACQUIRED:-false}" == true && -n "${LOCK_DIR:-}" && -d "$LOCK_DIR" ]]; then
-    rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
-  fi
+  release_pr_lock
   if [[ "${DRY_RUN:-false}" == true ]]; then
     :
   elif [[ -n "${DATA_DIR:-}" && -f "$DATA_DIR/report.md" ]]; then
@@ -146,7 +159,16 @@ if ! gh auth status >/dev/null 2>&1; then
 fi
 
 mkdir -p -m 700 "$REPO_ROOT/locks" "$RUN_ROOT"
-if ! mkdir -m 700 "$LOCK_DIR" 2>/dev/null; then
+if mkdir -m 700 "$LOCK_DIR" 2>/dev/null; then
+  LOCK_ACQUIRED=true
+else
+  # A process that just won mkdir may not have atomically published owner metadata yet.
+  # Give that publication a bounded grace period before considering an ownerless lock stale.
+  for _ in 1 2 3 4 5; do
+    [[ -f "$LOCK_DIR/owner" ]] && break
+    sleep 1
+  done
+
   lock_pid=""
   lock_repo=""
   lock_pr=""
@@ -164,11 +186,18 @@ if ! mkdir -m 700 "$LOCK_DIR" 2>/dev/null; then
     exit 1
   fi
   rm -rf "$LOCK_DIR"
-  mkdir -m 700 "$LOCK_DIR" || { echo -e "${RED}ERROR: unable to recover stale lock for $REPO_FULL PR #$PR_NUM${NC}" >&2; exit 1; }
+  if ! mkdir -m 700 "$LOCK_DIR" 2>/dev/null; then
+    echo -e "${RED}ERROR: unable to recover stale lock for $REPO_FULL PR #$PR_NUM${NC}" >&2
+    exit 1
+  fi
+  LOCK_ACQUIRED=true
 fi
-LOCK_ACQUIRED=true
-printf 'pid=%s\nrepo=%s\npr_num=%s\nstarted=%s\n' "$$" "$REPO_FULL" "$PR_NUM" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOCK_DIR/owner"
-chmod 600 "$LOCK_DIR/owner"
+
+owner_tmp="$LOCK_DIR/owner.tmp.$$.$RANDOM"
+printf 'pid=%s\nrepo=%s\npr_num=%s\nrun_id=%s\nstarted=%s\n' \
+  "$$" "$REPO_FULL" "$PR_NUM" "$RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$owner_tmp"
+chmod 600 "$owner_tmp"
+mv "$owner_tmp" "$LOCK_DIR/owner"
 
 PR_METADATA="$(gh pr view "$PR_NUM" --repo "$REPO_FULL" --json state,headRefName,headRepositoryOwner,headRepository,baseRefName,baseRefOid,headRefOid 2>/dev/null)" || {
   echo -e "${RED}ERROR: unable to read PR metadata${NC}" >&2
