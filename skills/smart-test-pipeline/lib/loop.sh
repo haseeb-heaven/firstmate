@@ -179,7 +179,6 @@ run_pipeline() {
         PIPELINE_RESULT="commit_failed"; write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"; return 1;
       }
     else
-      # Agents are not allowed to commit. If one did, validate every committed path.
       if ! validate_scope "$WORKTREE_DIR" "$agent_base_sha" "$findings_file" "$allowed_file"; then
         PIPELINE_RESULT="scope_blocked"; write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"; return 1
       fi
@@ -212,19 +211,19 @@ run_pipeline() {
     wait_for_reviews || { PIPELINE_RESULT="review_blocked"; write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"; return 1; }
   done
 
-  # The final review is collected after the last fix pass. A clean response
-  # here is a valid success, not an iteration-limit failure.
-  local final_dir="$DATA_DIR/iterations/$MAX_ITERATIONS" final_findings final_findings_file
+  # The terminal review is deliberately kept outside iterations/$MAX_ITERATIONS
+  # so collecting it cannot overwrite the final fix pass's findings or results.
+  local final_dir="$DATA_DIR/final-review" final_findings final_findings_file
+  rm -rf "$final_dir"
   mkdir -p "$final_dir"
   final_findings=$(collect_findings "$OWNER" "$REPO" "$PR_NUM" "$final_dir") || {
     PIPELINE_RESULT="review_blocked"
     write_final_report "$DATA_DIR" "$MAX_ITERATIONS" "$PIPELINE_RESULT"
     return 1
   }
-  final_findings_file="$final_dir/final-findings.json"
+  final_findings_file="$final_dir/findings.json"
   jq '.' <<<"$final_findings" > "$final_findings_file"
   if [[ "$CI_BLOCKED" != true ]] && [[ "$(count_actionable "$final_findings")" -eq 0 ]] && pr_head_matches_worktree; then
-    write_iteration_report "$DATA_DIR" "$MAX_ITERATIONS" "$final_findings_file"
     PIPELINE_RESULT="clean"
     write_final_report "$DATA_DIR" "$MAX_ITERATIONS" "$PIPELINE_RESULT"
     return 0
