@@ -10,6 +10,9 @@ fi
 if ! declare -F _smart_prior_run_sandboxed_impl >/dev/null 2>&1; then
   eval "$(declare -f _run_sandboxed_impl | sed '1s/_run_sandboxed_impl/_smart_prior_run_sandboxed_impl/')"
 fi
+if ! declare -F _smart_prior_pr_head_matches_worktree >/dev/null 2>&1; then
+  eval "$(declare -f pr_head_matches_worktree | sed '1s/pr_head_matches_worktree/_smart_prior_pr_head_matches_worktree/')"
+fi
 
 trusted_command_path() {
   local input="${1:-}" worktree="${2:-}" part output=""
@@ -157,9 +160,44 @@ validate_provider_hosts() {
   }
 }
 
+preflight_validation_sandbox() {
+  local mode="${VALIDATION_SANDBOX:-auto}"
+  case "$mode" in
+    macos)
+      sandbox_exec_works || { echo "ERROR: macOS validation sandbox unavailable" >&2; return 1; }
+      ;;
+    bwrap)
+      command -v bwrap >/dev/null 2>&1 || { echo "ERROR: bwrap validation sandbox unavailable" >&2; return 1; }
+      ;;
+    docker)
+      command -v docker >/dev/null 2>&1 || { echo "ERROR: docker validation sandbox unavailable" >&2; return 1; }
+      [[ -n "${SANDBOX_IMAGE:-}" ]] || { echo "ERROR: SANDBOX_IMAGE is required for docker validation" >&2; return 1; }
+      ;;
+    auto)
+      if sandbox_exec_works; then
+        return 0
+      fi
+      if command -v bwrap >/dev/null 2>&1; then
+        return 0
+      fi
+      if command -v docker >/dev/null 2>&1 && [[ -n "${SANDBOX_IMAGE:-}" ]]; then
+        return 0
+      fi
+      echo "ERROR: no usable credential-free validation sandbox backend is available" >&2
+      return 1
+      ;;
+    *)
+      echo "ERROR: unsupported validation sandbox mode: $mode" >&2
+      return 1
+      ;;
+  esac
+}
+
 # Validate the complete network/authentication boundary before any review bot is
 # triggered. This uses the broker contract rather than raw provider keys.
 preflight_agent() {
+  preflight_validation_sandbox || return 1
+
   case "$FIX_AGENT" in
     pi|claude|codex|opencode) ;;
     *) echo "ERROR: unsupported fix agent '$FIX_AGENT'; refusing to trigger review bots" >&2; return 1 ;;
@@ -209,7 +247,8 @@ spawn_fix_agent() {
 }
 
 # Pin the credential helper to the trusted absolute gh executable captured by
-# preflight, so a PR-controlled `gh` cannot be resolved from the worktree.
+# preflight. Reset the helper list first so an earlier repository/global helper
+# cannot run before the pinned helper.
 push_changes() {
   local remote="$1" worktree_dir="$2" remote_branch="$3" force="$4" helper
   [[ "${GH_EXECUTABLE:-}" == /* && -x "$GH_EXECUTABLE" ]] || {
@@ -219,7 +258,7 @@ push_changes() {
   printf -v helper '!%q auth git-credential' "$GH_EXECUTABLE"
   local -a args=(push "$remote" "HEAD:$remote_branch")
   [[ "$force" == true ]] && args+=(--force-with-lease)
-  if ! git -C "$worktree_dir" -c "credential.helper=$helper" "${args[@]}"; then
+  if ! git -C "$worktree_dir" -c credential.helper= -c "credential.helper=$helper" "${args[@]}"; then
     echo "ERROR: git push failed" >&2
     return 1
   fi
@@ -351,4 +390,112 @@ prepare_validation_snapshot() {
     GIT_COMMITTER_NAME=validation GIT_COMMITTER_EMAIL=validation@localhost \
     git -c core.hooksPath=/dev/null -c commit.gpgSign=false \
       -C "$snapshot_dir" commit --no-verify -qm "credential-free validation snapshot"
+}
+
+# The parent may cancel a timeout watcher only after the watcher has installed
+# its TERM/INT trap and published readiness. This closes the race that could
+# orphan the timer sleep and keep a validation FIFO open.
+TIMEOUT_WATCHER_PID=""
+start_process_group_timeout_watcher() {
+  local seconds="$1" pgid="$2" ready="${TMPDIR:-/tmp}/smart-timeout-ready.$$.$RANDOM"
+  rm -f "$ready"
+  (
+    local timer=""
+    trap 'if [[ -n "$timer" ]]; then kill -TERM "$timer" 2>/dev/null || true; wait "$timer" 2>/dev/null || true; fi; rm -f "$ready"; exit 0' TERM INT
+    sleep "$seconds" & timer=$!
+    : > "$ready"
+    wait "$timer" 2>/dev/null || { rm -f "$ready"; exit 0; }
+    rm -f "$ready"
+    kill -TERM -- "-$pgid" 2>/dev/null || true
+    sleep 1 & timer=$!
+    wait "$timer" 2>/dev/null || exit 0
+    kill -KILL -- "-$pgid" 2>/dev/null || true
+  ) &
+  TIMEOUT_WATCHER_PID=$!
+
+  local attempts=0
+  while [[ ! -e "$ready" ]]; do
+    if ! kill -0 "$TIMEOUT_WATCHER_PID" 2>/dev/null; then
+      wait "$TIMEOUT_WATCHER_PID" 2>/dev/null || true
+      rm -f "$ready"
+      return 1
+    fi
+    attempts=$((attempts + 1))
+    if [[ "$attempts" -ge 200 ]]; then
+      kill -TERM "$TIMEOUT_WATCHER_PID" 2>/dev/null || true
+      wait "$TIMEOUT_WATCHER_PID" 2>/dev/null || true
+      rm -f "$ready"
+      return 1
+    fi
+    sleep 0.01
+  done
+  rm -f "$ready"
+}
+
+run_process_group_with_timeout() (
+  local seconds="$1"; shift
+  local child watcher rc pgid shell_pgid
+  [[ "$seconds" =~ ^[1-9][0-9]*$ ]] || return 2
+  set -m
+  "$@" & child=$!
+  set +m
+  pgid="$child"
+  shell_pgid=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d '[:space:]')
+  if [[ ! "$pgid" =~ ^[1-9][0-9]*$ || "$pgid" == "$shell_pgid" ]]; then
+    kill -TERM "$child" 2>/dev/null || true
+    wait "$child" 2>/dev/null || true
+    return 125
+  fi
+  if ! start_process_group_timeout_watcher "$seconds" "$pgid"; then
+    kill -TERM -- "-$pgid" 2>/dev/null || true
+    wait "$child" 2>/dev/null || true
+    return 125
+  fi
+  watcher="$TIMEOUT_WATCHER_PID"
+  if wait "$child"; then rc=0; else rc=$?; fi
+  kill -TERM "$watcher" 2>/dev/null || true
+  wait "$watcher" 2>/dev/null || true
+  if kill -0 -- "-$pgid" 2>/dev/null; then
+    kill -TERM -- "-$pgid" 2>/dev/null || true
+    sleep 1
+    kill -KILL -- "-$pgid" 2>/dev/null || true
+  fi
+  return "$rc"
+)
+
+run_validation_command() {
+  run_process_group_with_timeout "$@"
+}
+
+# Every Git operation that stages or commits fixer output runs without host or
+# system configuration, preventing repository-controlled attributes from
+# activating host-defined clean filters before the validated commit is made.
+commit_fixes() {
+  local worktree_dir="$1" iteration="$2" allowed_file="$3" path
+  GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    git -C "$worktree_dir" -c core.hooksPath=/dev/null -c commit.gpgSign=false reset --quiet --
+  while IFS= read -r path; do
+    [[ -z "$path" ]] && continue
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -C "$worktree_dir" -c core.hooksPath=/dev/null -c commit.gpgSign=false add -- "$path"
+  done < "$allowed_file"
+  if GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    git -C "$worktree_dir" -c core.hooksPath=/dev/null -c commit.gpgSign=false diff --cached --quiet --; then
+    echo "ERROR: no allowed changes remain staged" >&2
+    return 1
+  fi
+  if ! GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    git -C "$worktree_dir" -c core.hooksPath=/dev/null -c commit.gpgSign=false \
+      commit --no-verify -m "fix: address review findings (iteration $iteration)"; then
+    echo "ERROR: git commit failed" >&2
+    return 1
+  fi
+}
+
+# Every head-equivalence guard also checks that the PR is still open. The final
+# clean predicate calls this immediately after collecting findings, so a PR
+# closed or merged during pagination cannot satisfy the successful result.
+pr_head_matches_worktree() {
+  require_pr_open "$OWNER" "$REPO" "$PR_NUM" >/dev/null 2>&1 || return 1
+  _smart_prior_pr_head_matches_worktree "$@"
 }
