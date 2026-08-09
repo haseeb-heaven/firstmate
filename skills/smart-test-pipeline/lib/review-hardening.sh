@@ -18,8 +18,6 @@ safe_command_path() {
   printf '%s\n' "$output"
 }
 
-# Never resolve sandbox backends from a relative PATH entry after chdir into a
-# PR-controlled worktree. Absolute operator PATH entries remain available.
 run_sandboxed() {
   local worktree="$2" original_path="${PATH:-/usr/bin:/bin}" safe_path
   safe_path=$(safe_command_path "$original_path")
@@ -37,8 +35,6 @@ validation_runtime_executables() {
   done | awk '!seen[$0]++'
 }
 
-# Validation is credential-free but still needs narrowly scoped read access to
-# Homebrew/npm runtimes selected by TEST_CMD/LINT_CMD.
 write_macos_profile() {
   local profile="$1" worktree="$2" agent_home="$3" temp_dir="$4" allow_network="$5" provider_hosts="$6" executable="${7:-}"
   cat > "$profile" <<PROFILE
@@ -84,8 +80,6 @@ PROFILE
   fi
 }
 
-# Narrow secret-path matching to actual secret stores and secret extensions;
-# ordinary source such as src/credentials.py must remain validatable.
 snapshot_path_is_forbidden() {
   local path="$1" lower_path basename_lower
   [[ "$path" != /* && "$path" != .git && "$path" != .git/* ]] || return 0
@@ -110,7 +104,6 @@ snapshot_path_is_forbidden() {
   return 1
 }
 
-# Encode every finding field, including repository-controlled path metadata.
 generate_fix_brief() {
   local data_dir="$1" iteration="$2" findings_file="$3"
   local brief_file="$data_dir/iterations/$iteration/fix-brief.md"
@@ -151,8 +144,7 @@ HEADER
   printf '%s\n' "$brief_file"
 }
 
-# A watcher waits on its sleep child so TERM interrupts the shell's wait and
-# cancels the sleep immediately instead of blocking until the full timeout.
+TIMEOUT_WATCHER_PID=""
 start_process_group_timeout_watcher() {
   local seconds="$1" pgid="$2"
   (
@@ -165,7 +157,7 @@ start_process_group_timeout_watcher() {
     wait "$timer" 2>/dev/null || exit 0
     kill -KILL -- "-$pgid" 2>/dev/null || true
   ) &
-  printf '%s\n' "$!"
+  TIMEOUT_WATCHER_PID=$!
 }
 
 run_process_group_with_timeout() (
@@ -182,7 +174,8 @@ run_process_group_with_timeout() (
     wait "$child" 2>/dev/null || true
     return 125
   fi
-  watcher=$(start_process_group_timeout_watcher "$seconds" "$pgid")
+  start_process_group_timeout_watcher "$seconds" "$pgid"
+  watcher="$TIMEOUT_WATCHER_PID"
   if wait "$child"; then rc=0; else rc=$?; fi
   kill -TERM "$watcher" 2>/dev/null || true
   wait "$watcher" 2>/dev/null || true
@@ -198,8 +191,6 @@ run_validation_command() {
   run_process_group_with_timeout "$@"
 }
 
-# Override the agent launcher so it uses the same cancellable process-group
-# timeout primitive instead of a watcher whose external sleep survives TERM.
 spawn_fix_agent() {
   local worktree_dir="$1" brief_file="$2" agent="$3" home_dir="$4" temp_dir="$5"
   if [[ -z "${AGENT_EXECUTABLE:-}" ]]; then
@@ -229,8 +220,12 @@ spawn_fix_agent() {
   run_process_group_with_timeout "${AGENT_TIMEOUT:-1800}" run_sandboxed "${AGENT_SANDBOX:-auto}" "$worktree_dir" "$home_dir" "$temp_dir" true "${broker_argv[@]}"
 }
 
-# Stream validation failure bodies through a temporary file/stdin rather than
-# placing up to 1 MiB into a jq argv entry.
+ci_findings_from_file() {
+  local failure_file="$1"
+  [[ -s "$failure_file" ]] || { echo '[]'; return 0; }
+  jq -Rs '[{id:"ci-failure",path:"unknown",line:null,severity:"high",body:.,source:"github-ci"}]' < "$failure_file"
+}
+
 validation_findings() {
   local previous="$DATA_DIR/iterations/$((ITERATION - 1))" temp body_present=false failure
   temp=$(mktemp "${TMPDIR:-/tmp}/smart-validation-findings.XXXXXX") || return 1
