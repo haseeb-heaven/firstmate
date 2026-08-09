@@ -175,11 +175,11 @@ is_review_bot_done() {
     "/repos/$owner/$repo/issues/$pr_num/comments" \
     --paginate --slurp 2>/dev/null) || return 1
 
-  local last_review_comment last_issue_comment
-  last_review_comment=$(echo "$review_comments" | jq --arg login "$login" --argjson baseline "$review_baseline" '[.[][] | select(.user.login == $login and .id > $baseline) | .body] | last // ""')
-  last_issue_comment=$(echo "$issue_comments" | jq --arg login "$login" --argjson baseline "$issue_baseline" '[.[][] | select(.user.login == $login and .id > $baseline) | .body] | last // ""')
+  local review_bodies issue_bodies
+  review_bodies=$(echo "$review_comments" | jq -r --arg login "$login" --argjson baseline "$review_baseline" '[.[][] | select(.user.login == $login and .id > $baseline) | .body] | .[]')
+  issue_bodies=$(echo "$issue_comments" | jq -r --arg login "$login" --argjson baseline "$issue_baseline" '[.[][] | select(.user.login == $login and .id > $baseline) | .body] | .[]')
 
-  printf '%s\n%s\n' "$last_review_comment" "$last_issue_comment" |
+  printf '%s\n%s\n' "$review_bodies" "$issue_bodies" |
     grep -Eiq "all comments resolved|no issues found|review complete|no findings|lgtm"
 }
 

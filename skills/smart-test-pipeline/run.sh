@@ -178,8 +178,8 @@ if [[ "$REMOTE_HEAD" != "$HEAD_SHA" ]]; then
   echo -e "${RED}ERROR: PR head changed during setup; refusing to overwrite unexpected history${NC}" >&2
   exit 1
 fi
-if ! git -C "$REPOSITORY_DIR" merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA"; then
-  echo -e "${RED}ERROR: PR head is not based on the current PR base; refusing to operate${NC}" >&2
+if ! git -C "$REPOSITORY_DIR" merge-base "$BASE_SHA" "$HEAD_SHA" >/dev/null; then
+  echo -e "${RED}ERROR: PR head and base have no common ancestry; refusing to operate${NC}" >&2
   exit 1
 fi
 

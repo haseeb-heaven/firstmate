@@ -126,7 +126,9 @@ EOF
     findings=$(jq 'length' "$iter_dir/findings.json" 2>/dev/null || echo "?")
     actionable=$(jq '[.[] | select(.severity == "high" or .severity == "medium")] | length' "$iter_dir/findings.json" 2>/dev/null || echo "?")
 
-    if [[ -f "$iter_dir/test-output.txt" ]]; then
+    if [[ -f "$iter_dir/test-failures.txt" ]]; then
+      tests="failed"
+    elif [[ -f "$iter_dir/test-output.txt" ]]; then
       tests=$(grep -Eo '[0-9]+ passed' "$iter_dir/test-output.txt" | tail -1 || echo "ran")
     else
       tests="skipped"
@@ -135,7 +137,7 @@ EOF
     if [[ -f "$iter_dir/ci-conclusions.json" ]]; then
       local passed failed
       passed=$(jq '[.[] | select(.conclusion == "success")] | length' "$iter_dir/ci-conclusions.json" 2>/dev/null || echo "?")
-      failed=$(jq '[.[] | select(.conclusion == "failure")] | length' "$iter_dir/ci-conclusions.json" 2>/dev/null || echo "?")
+      failed=$(jq '[.[] | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")] | length' "$iter_dir/ci-conclusions.json" 2>/dev/null || echo "?")
       ci="passed: $passed, failed: $failed"
     else
       ci="pending"

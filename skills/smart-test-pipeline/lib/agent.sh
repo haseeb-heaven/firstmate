@@ -52,10 +52,10 @@ HEADER
 agent_command() {
   local agent="$1" brief="$2"
   case "$agent" in
-    pi) printf '%s\0' pi -p --no-session --no-approve "$(cat "$brief")" ;;
-    claude) printf '%s\0' claude -p --permission-mode acceptEdits "$(cat "$brief")" ;;
-    codex) printf '%s\0' codex exec --full-auto --sandbox workspace-write "$(cat "$brief")" ;;
-    opencode) printf '%s\0' opencode -p -q "$(cat "$brief")" ;;
+    pi) printf '%s\0' pi -p --no-session --no-approve ;;
+    claude) printf '%s\0' claude -p --permission-mode acceptEdits ;;
+    codex) printf '%s\0' codex exec --full-auto --sandbox workspace-write ;;
+    opencode) printf '%s\0' opencode -p -q ;;
     *) echo "ERROR: unsupported fix agent: $agent" >&2; return 2 ;;
   esac
 }
@@ -76,7 +76,7 @@ spawn_fix_agent() {
   local -a argv=()
   while IFS= read -r -d '' arg; do argv+=("$arg"); done < <(agent_command "$agent" "$brief_file")
   echo -e "${CYAN}  ${PLAY} Running $agent in the restricted agent boundary${NC}"
-  run_sandboxed "${AGENT_SANDBOX:-auto}" "$worktree_dir" "$home_dir" "$temp_dir" true "${argv[@]}"
+  run_sandboxed "${AGENT_SANDBOX:-auto}" "$worktree_dir" "$home_dir" "$temp_dir" true "${argv[@]}" < "$brief_file"
 }
 
 changed_paths() {
@@ -99,7 +99,9 @@ path_is_forbidden() {
 
 path_is_allowed_support() {
   local path="$1" pattern
-  for pattern in $ALLOWED_SUPPORT_GLOBS; do
+  local -a patterns=()
+  read -r -a patterns <<< "${ALLOWED_SUPPORT_GLOBS:-}"
+  for pattern in "${patterns[@]}"; do
     case "$pattern" in
       **/*) [[ "$path" == ${pattern#'**/'} || "$path" == $pattern ]] && return 0 ;;
       *) [[ "$path" == $pattern || "$path" == $pattern\/* ]] && return 0 ;;

@@ -74,9 +74,19 @@ prepare_validation_snapshot() {
     }
     lower_path=$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')
     case "$lower_path" in
-      .env|.env.*|*.key|*.pem|*.p12|*.pfx|*credentials*|*credential*)
+      .env|*.key|*.pem|*.p12|*.pfx)
+        if [[ "$path" == .env.example || "$path" == .env.*.example || "$path" == docs/*.md || "$path" == docs/**/*.md ]]; then
+          :
+        else
+          echo "ERROR: secret-like path refused in validation snapshot: $path" >&2
+          return 1
+        fi
+        ;;
+      *credentials*|*credential*)
+        if [[ "$path" == docs/*.md || "$path" == docs/**/*.md ]]; then :; else
         echo "ERROR: secret-like path refused in validation snapshot: $path" >&2
         return 1
+        fi
         ;;
     esac
     if [[ -L "$source_dir/$path" ]]; then
@@ -90,6 +100,7 @@ prepare_validation_snapshot() {
       ln -s "$target" "$snapshot_dir/$path"
       continue
     fi
+    [[ -e "$source_dir/$path" || -L "$source_dir/$path" ]] || continue
     [[ -f "$source_dir/$path" ]] || {
       echo "ERROR: unsupported file type in validation snapshot: $path" >&2
       return 1
@@ -146,10 +157,7 @@ wait_for_ci() {
     status_total=$(jq '[.[][]] | length' <<<"$statuses")
     status_pending=$(jq '[.[][] | select(.state == "pending")] | length' <<<"$statuses")
     total=$((total + status_total)); pending=$((pending + status_pending))
-    if [[ "$total" -eq 0 ]]; then
-      printf '## CI Failures\n\n- No CI checks or commit statuses reported\n' > "$failures_file"
-      return 1
-    fi
+    if [[ "$total" -eq 0 ]]; then sleep 5; continue; fi
     if [[ "$pending" -gt 0 ]]; then sleep 30; continue; fi
     jq '[.[].check_runs[] | {name, conclusion, details_url: .html_url}]' <<<"$check_runs" > "$conclusions_file"
     jq '[.[][] | {name: .context, conclusion: (if .state == "success" then "success" else .state end), details_url: .target_url}]' <<<"$statuses" > "$conclusions_file.statuses"
