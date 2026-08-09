@@ -5,7 +5,6 @@ set -euo pipefail
 REPORT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$REPORT_LIB_DIR/colors.sh"
 
-# Generate iteration report
 write_iteration_report() {
   local data_dir="$1" iteration="$2" findings_file="$3"
   local report_file="$data_dir/iterations/$iteration/report.md"
@@ -36,7 +35,6 @@ EOF
   echo -e "${DIM}  Report: $report_file${NC}"
 }
 
-# Append results to iteration report
 append_results() {
   local data_dir="$1" iteration="$2"
   local report_file="$data_dir/iterations/$iteration/report.md"
@@ -100,7 +98,6 @@ EOF
   fi
 }
 
-# Generate final report
 write_final_report() {
   local data_dir="$1" total_iterations="$2" result="$3"
   local report_file="$data_dir/report.md"

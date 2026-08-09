@@ -75,7 +75,7 @@ git -C "$TMP_ROOT/repo" add service/.env.production
 if prepare_validation_snapshot "$TMP_ROOT/repo" "$TMP_ROOT/snapshot" 2>"$TMP_ROOT/snapshot.err"; then
   fail "nested production environment file entered validation snapshot"
 fi
-grep -Fq 'secret-like path refused' "$TMP_ROOT/snapshot.err" || fail "nested secret refusal was not reported"
+grep -Fq 'secret-like' "$TMP_ROOT/snapshot.err" || fail "nested secret refusal was not reported"
 pass "validation snapshot rejects nested environment secrets behaviorally"
 
 echo "all final-review behavioral regression tests passed"

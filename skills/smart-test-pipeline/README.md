@@ -7,7 +7,7 @@
 3. Collects unresolved, non-outdated review threads through GitHub GraphQL.
 4. Spawns a fix agent with a structured brief containing review and CI findings.
 5. Runs the configured tests and optional lint in a credential-free disposable sandbox before committing or pushing changes.
-6. Optionally waits for at least one completed, successful CI check.
+6. Optionally waits for a successful CI set to remain stable across multiple polls before declaring it green.
 7. Repeats until no unresolved findings remain or the maximum iteration count is reached.
 
 ## Quick start
@@ -33,7 +33,10 @@ Copy `config.example.sh` to `config.sh` beside `run.sh`, or set `SMART_TEST_CONF
 | `FIX_AGENT` | pi | Agent to spawn for fixes (pi, claude, codex, opencode) |
 | `WAIT_CI` | true | Wait for CI green before next iteration |
 | `CI_TIMEOUT` | 3600 | Seconds to wait for CI |
+| `CI_STABILITY_POLLS` | 3 | Identical completed CI polls required before success |
 | `AGENT_TIMEOUT` | 1800 | Seconds before a stalled fix agent is terminated |
+| `VALIDATION_TIMEOUT` | 3600 | Seconds before a test or lint stage is terminated |
+| `VALIDATION_OUTPUT_LIMIT` | 1048576 | Maximum captured bytes per test or lint stage |
 | `REVIEW_BOTS` | coderabbit greptile | Bots to trigger |
 | `TEST_CMD` | `python -m pytest --tb=short -q` | Local test command |
 | `LINT_CMD` | (empty) | Local lint command |

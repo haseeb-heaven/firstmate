@@ -19,8 +19,10 @@ fi
 : "${DRY_RUN:=false}"
 : "${FORCE_PUSH:=false}"
 : "${CI_TIMEOUT:=3600}"
+: "${CI_STABILITY_POLLS:=3}"
 : "${AGENT_TIMEOUT:=1800}"
 : "${VALIDATION_TIMEOUT:=3600}"
+: "${VALIDATION_OUTPUT_LIMIT:=1048576}"
 : "${REVIEW_BOTS:=coderabbit greptile}"
 : "${TEST_CMD:=python -m pytest --tb=short -q}"
 : "${LINT_CMD:=}"
@@ -58,14 +60,17 @@ if [[ -z "$PR_URL" ]]; then
   exit 2
 fi
 
-if [[ ! "$MAX_ITERATIONS" =~ ^[1-9][0-9]*$ || ! "$CI_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
-  echo "ERROR: iteration and timeout values must be positive integers" >&2
-  exit 2
-fi
+for numeric_setting in MAX_ITERATIONS CI_TIMEOUT CI_STABILITY_POLLS AGENT_TIMEOUT VALIDATION_TIMEOUT VALIDATION_OUTPUT_LIMIT REVIEW_TIMEOUT POLL_INTERVAL; do
+  eval "numeric_value=\${$numeric_setting}"
+  if [[ ! "$numeric_value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: $numeric_setting must be a positive integer" >&2
+    exit 2
+  fi
+done
 
 if [[ "$PR_URL" =~ ^https://github\.com/([^/]+)/([^/]+)/pull/([0-9]+)$ ]]; then
-  OWNER="${BASH_REMATCH[1],,}"
-  REPO="${BASH_REMATCH[2],,}"
+  OWNER="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')"
+  REPO="$(printf '%s' "${BASH_REMATCH[2]}" | tr '[:upper:]' '[:lower:]')"
   PR_NUM="${BASH_REMATCH[3]}"
 else
   echo "ERROR: not a valid GitHub PR URL: $PR_URL" >&2
@@ -86,9 +91,7 @@ WORKTREE_LANDED=false
 
 worktree_is_clean() {
   [[ -n "${WORKTREE_DIR:-}" && -d "$WORKTREE_DIR" ]] || return 1
-  git -C "$WORKTREE_DIR" diff --quiet &&
-    git -C "$WORKTREE_DIR" diff --cached --quiet &&
-    [[ -z "$(git -C "$WORKTREE_DIR" ls-files --others --exclude-standard)" ]]
+  [[ -z "$(git -C "$WORKTREE_DIR" status --porcelain=v1 --untracked-files=all --ignored=matching)" ]]
 }
 
 cleanup() {
@@ -198,7 +201,8 @@ git -C "$REPOSITORY_DIR" config user.email "smart-test-pipeline@localhost"
 git -C "$REPOSITORY_DIR" config credential.helper '!gh auth git-credential'
 
 git -C "$REPOSITORY_DIR" fetch --no-tags origin "$BASE_BRANCH" >/dev/null
-if [[ "${HEAD_OWNER,,}/${HEAD_REPO,,}" != "$REPO_FULL" ]]; then
+HEAD_REPO_KEY="$(printf '%s/%s' "$HEAD_OWNER" "$HEAD_REPO" | tr '[:upper:]' '[:lower:]')"
+if [[ "$HEAD_REPO_KEY" != "$REPO_FULL" ]]; then
   git -C "$REPOSITORY_DIR" remote add pr-head "https://github.com/$HEAD_OWNER/$HEAD_REPO.git"
   git -C "$REPOSITORY_DIR" fetch --no-tags pr-head "$PR_BRANCH" >/dev/null
   PUSH_REMOTE="pr-head"
@@ -224,7 +228,7 @@ LOCAL_BRANCH="detached-pr-$PR_NUM-$RUN_ID"
 
 export PR_URL OWNER REPO PR_NUM REPO_FULL BRANCH LOCAL_BRANCH WORKTREE_DIR DATA_DIR PUSH_REMOTE
 export BASE_BRANCH BASE_SHA HEAD_SHA REPOSITORY_DIR RUN_ROOT RUN_ID
-export MAX_ITERATIONS FIX_AGENT WAIT_CI DRY_RUN FORCE_PUSH CI_TIMEOUT AGENT_TIMEOUT VALIDATION_TIMEOUT REVIEW_BOTS TEST_CMD LINT_CMD
+export MAX_ITERATIONS FIX_AGENT WAIT_CI DRY_RUN FORCE_PUSH CI_TIMEOUT CI_STABILITY_POLLS AGENT_TIMEOUT VALIDATION_TIMEOUT VALIDATION_OUTPUT_LIMIT REVIEW_BOTS TEST_CMD LINT_CMD
 export PRE_REVIEW_WAIT REVIEW_TIMEOUT POLL_INTERVAL ALLOWED_SUPPORT_GLOBS VALIDATION_SANDBOX AGENT_SANDBOX
 
 source "$SCRIPT_DIR/lib/loop.sh"

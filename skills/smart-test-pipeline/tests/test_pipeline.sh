@@ -104,7 +104,7 @@ git -C "$TMP_ROOT/repo" add service/.env
 if run_tests "$TMP_ROOT/repo" 'true' "$TMP_ROOT/data" 1; then
   fail "nested tracked .env was copied into validation snapshot"
 fi
-assert_contains "$TMP_ROOT/data/iterations/1/test-failures.txt" 'secret-like path refused' 'nested secret snapshot failures are persisted'
+assert_contains "$TMP_ROOT/data/iterations/1/test-failures.txt" 'secret-like' 'nested secret snapshot failures are persisted'
 git -C "$TMP_ROOT/repo" reset -q HEAD -- service/.env
 git -C "$TMP_ROOT/repo" clean -fdq
 

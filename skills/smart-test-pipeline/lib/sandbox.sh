@@ -182,8 +182,6 @@ _run_sandboxed_impl() {
   esac
 }
 
-# Every backend starts in the disposable PR worktree. The subshell prevents a
-# validation or agent invocation from changing the orchestrator's directory.
 run_sandboxed() {
   local worktree="$2"
   (cd "$worktree" && _run_sandboxed_impl "$@")
