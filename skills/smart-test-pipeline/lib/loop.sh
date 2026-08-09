@@ -15,6 +15,21 @@ CI_BLOCKED=false
 VALIDATION_BLOCKED=false
 ITERATION=0
 
+preflight_review_bots() {
+  local bot count=0
+  for bot in $REVIEW_BOTS; do
+    count=$((count + 1))
+    case "$bot" in
+      coderabbit|greptile) ;;
+      *) echo "ERROR: unsupported review bot '$bot'; refusing to trigger any review bots" >&2; return 1 ;;
+    esac
+  done
+  [[ "$count" -gt 0 ]] || {
+    echo "ERROR: REVIEW_BOTS must contain at least one supported bot" >&2
+    return 1
+  }
+}
+
 trigger_reviews() {
   require_pr_open "$OWNER" "$REPO" "$PR_NUM"
   REVIEW_BASELINE_FILE="$DATA_DIR/review-baseline.txt"
@@ -79,14 +94,40 @@ preflight_agent() {
     pi|claude|codex|opencode) ;;
     *) echo "ERROR: unsupported fix agent '$FIX_AGENT'; refusing to trigger review bots" >&2; return 1 ;;
   esac
-  command -v "$FIX_AGENT" >/dev/null 2>&1 || {
+
+  local executable provider_env_names provider_name provider_value credential_found=false
+  executable=$(command -v "$FIX_AGENT" 2>/dev/null) || {
     echo "ERROR: fix agent '$FIX_AGENT' is not installed; refusing to trigger review bots" >&2
     return 1
   }
-  agent_provider_env "$FIX_AGENT" >/dev/null || {
+  case "$executable" in
+    /*) ;;
+    *) executable="$(cd "$(dirname "$executable")" && pwd -P)/$(basename "$executable")" ;;
+  esac
+  [[ -x "$executable" ]] || {
+    echo "ERROR: fix agent '$FIX_AGENT' resolved to a non-executable path" >&2
+    return 1
+  }
+  AGENT_EXECUTABLE="$executable"
+  export AGENT_EXECUTABLE
+
+  provider_env_names=$(agent_provider_env "$FIX_AGENT") || {
     echo "ERROR: fix agent '$FIX_AGENT' has no supported provider configuration" >&2
     return 1
   }
+  for provider_name in $provider_env_names; do
+    [[ "$provider_name" =~ ^[A-Z][A-Z0-9_]*$ ]] || continue
+    eval "provider_value=\${$provider_name-}"
+    if [[ -n "$provider_value" ]]; then
+      credential_found=true
+      break
+    fi
+  done
+  [[ "$credential_found" == true ]] || {
+    echo "ERROR: none of the configured provider credentials for '$FIX_AGENT' are populated; refusing to trigger review bots" >&2
+    return 1
+  }
+
   case "${AGENT_SANDBOX:-auto}" in
     macos) sandbox_exec_works || { echo "ERROR: macOS agent sandbox unavailable" >&2; return 1; } ;;
     bwrap|docker) echo "ERROR: $AGENT_SANDBOX cannot provide provider-restricted agent networking" >&2; return 1 ;;
@@ -106,6 +147,14 @@ finish_head_changed() {
   return 1
 }
 
+finish_pr_not_open() {
+  local iteration="$1"
+  echo "ERROR: PR is no longer open; refusing further work or a clean result" >&2
+  PIPELINE_RESULT="pr_not_open"
+  write_final_report "$DATA_DIR" "$iteration" "$PIPELINE_RESULT"
+  return 1
+}
+
 run_pipeline() {
   mkdir -p "$DATA_DIR/iterations" "$RUN_ROOT/agent-home" "$RUN_ROOT/agent-tmp"
   if [[ "$DRY_RUN" == true ]]; then
@@ -115,9 +164,11 @@ run_pipeline() {
   fi
 
   require_pr_open "$OWNER" "$REPO" "$PR_NUM"
+  preflight_review_bots || { PIPELINE_RESULT="review_preflight_failed"; write_final_report "$DATA_DIR" 0 "$PIPELINE_RESULT"; return 1; }
   preflight_agent || { PIPELINE_RESULT="agent_preflight_failed"; write_final_report "$DATA_DIR" 0 "$PIPELINE_RESULT"; return 1; }
   trigger_reviews || { PIPELINE_RESULT="review_blocked"; write_final_report "$DATA_DIR" 0 "$PIPELINE_RESULT"; return 1; }
   wait_for_reviews || { PIPELINE_RESULT="review_blocked"; write_final_report "$DATA_DIR" 0 "$PIPELINE_RESULT"; return 1; }
+  require_pr_open "$OWNER" "$REPO" "$PR_NUM" || { finish_pr_not_open 0; return 1; }
 
   for (( ITERATION=1; ITERATION<=MAX_ITERATIONS; ITERATION++ )); do
     local iter_dir="$DATA_DIR/iterations/$ITERATION"
@@ -140,6 +191,7 @@ run_pipeline() {
     actionable=$(count_actionable "$findings")
 
     if [[ "$actionable" -eq 0 ]]; then
+      require_pr_open "$OWNER" "$REPO" "$PR_NUM" || { finish_pr_not_open "$ITERATION"; return 1; }
       if ! pr_head_matches_worktree; then
         finish_head_changed "$ITERATION" "$findings_file"
         return 1
@@ -147,6 +199,7 @@ run_pipeline() {
       if [[ "$WAIT_CI" == true && "$CI_BLOCKED" != true ]]; then
         if wait_for_ci "$OWNER" "$REPO" "$(get_current_sha)" "$CI_TIMEOUT" "$DATA_DIR" "$ITERATION"; then
           CI_BLOCKED=false
+          require_pr_open "$OWNER" "$REPO" "$PR_NUM" || { finish_pr_not_open "$ITERATION"; return 1; }
           if ! pr_head_matches_worktree; then
             finish_head_changed "$ITERATION" "$findings_file"
             return 1
@@ -161,6 +214,7 @@ run_pipeline() {
         fi
       fi
       if [[ "$actionable" -eq 0 ]]; then
+        require_pr_open "$OWNER" "$REPO" "$PR_NUM" || { finish_pr_not_open "$ITERATION"; return 1; }
         if [[ "$CI_BLOCKED" == true ]]; then
           PIPELINE_RESULT="ci_blocked"
         elif [[ "$VALIDATION_BLOCKED" == true ]]; then
@@ -222,7 +276,7 @@ run_pipeline() {
       PIPELINE_RESULT="scope_blocked"; write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"; return 1
     fi
 
-    require_pr_open "$OWNER" "$REPO" "$PR_NUM"
+    require_pr_open "$OWNER" "$REPO" "$PR_NUM" || { finish_pr_not_open "$ITERATION"; return 1; }
     push_changes "$PUSH_REMOTE" "$WORKTREE_DIR" "$BRANCH" "$FORCE_PUSH" || {
       PIPELINE_RESULT="push_failed"; write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"; return 1;
     }
@@ -230,6 +284,7 @@ run_pipeline() {
     if [[ "$WAIT_CI" == true ]]; then
       if wait_for_ci "$OWNER" "$REPO" "$(get_current_sha)" "$CI_TIMEOUT" "$DATA_DIR" "$ITERATION"; then
         CI_BLOCKED=false
+        require_pr_open "$OWNER" "$REPO" "$PR_NUM" || { finish_pr_not_open "$ITERATION"; return 1; }
         if ! pr_head_matches_worktree; then
           finish_head_changed "$ITERATION" "$findings_file"
           return 1
@@ -243,8 +298,10 @@ run_pipeline() {
     append_results "$DATA_DIR" "$ITERATION"
     trigger_reviews || { PIPELINE_RESULT="review_blocked"; write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"; return 1; }
     wait_for_reviews || { PIPELINE_RESULT="review_blocked"; write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"; return 1; }
+    require_pr_open "$OWNER" "$REPO" "$PR_NUM" || { finish_pr_not_open "$ITERATION"; return 1; }
   done
 
+  require_pr_open "$OWNER" "$REPO" "$PR_NUM" || { finish_pr_not_open "$MAX_ITERATIONS"; return 1; }
   local final_dir="$DATA_DIR/final-review" final_findings final_findings_file
   rm -rf "$final_dir"
   mkdir -p "$final_dir"
