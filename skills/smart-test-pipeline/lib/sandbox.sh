@@ -43,7 +43,7 @@ resolve_runtime_path() {
   local path="$1" target dir hops=0
   [[ -n "$path" ]] || return 0
   while [[ -L "$path" ]]; do
-    (( hops += 1 ))
+    hops=$((hops + 1))
     (( hops <= 40 )) || { echo "ERROR: executable symlink chain is too deep: $1" >&2; return 1; }
     target=$(readlink "$path") || return 1
     if [[ "$target" == /* ]]; then
@@ -62,19 +62,89 @@ resolve_runtime_path() {
 }
 
 agent_runtime_roots() {
-  local executable="$1" resolved launcher_dir resolved_dir root
-  [[ -n "$executable" ]] || return 0
+  local path="$1" prefix rest scope package cellar_base formula version
+  [[ -n "$path" ]] || return 0
+
+  case "$path" in
+    */node_modules/@*/*/*)
+      prefix="${path%%/node_modules/*}/node_modules"
+      rest="${path#*/node_modules/}"
+      scope="${rest%%/*}"
+      rest="${rest#*/}"
+      package="${rest%%/*}"
+      [[ "$scope" == @* && -n "$package" ]] && printf '%s/%s/%s\n' "$prefix" "$scope" "$package"
+      ;;
+    */node_modules/*/*)
+      prefix="${path%%/node_modules/*}/node_modules"
+      rest="${path#*/node_modules/}"
+      package="${rest%%/*}"
+      [[ -n "$package" ]] && printf '%s/%s\n' "$prefix" "$package"
+      ;;
+  esac
+
+  case "$path" in
+    /opt/homebrew/Cellar/*/*/*)
+      cellar_base="/opt/homebrew/Cellar"
+      rest="${path#$cellar_base/}"
+      formula="${rest%%/*}"
+      rest="${rest#*/}"
+      version="${rest%%/*}"
+      [[ -n "$formula" && -n "$version" ]] && printf '%s/%s/%s\n' "$cellar_base" "$formula" "$version"
+      ;;
+    /usr/local/Cellar/*/*/*)
+      cellar_base="/usr/local/Cellar"
+      rest="${path#$cellar_base/}"
+      formula="${rest%%/*}"
+      rest="${rest#*/}"
+      version="${rest%%/*}"
+      [[ -n "$formula" && -n "$version" ]] && printf '%s/%s/%s\n' "$cellar_base" "$formula" "$version"
+      ;;
+  esac
+}
+
+runtime_interpreter_path() {
+  local executable="$1" resolved first_line shebang interpreter command_name
   resolved=$(resolve_runtime_path "$executable") || return 1
-  launcher_dir=$(cd "$(dirname "$executable")" && pwd -P)
-  resolved_dir=$(cd "$(dirname "$resolved")" && pwd -P)
-  for root in "$launcher_dir" "$(dirname "$launcher_dir")" "$resolved_dir" "$(dirname "$resolved_dir")"; do
-    [[ -n "$root" && "$root" != / ]] || continue
-    printf '%s\n' "$root"
-  done | awk '!seen[$0]++'
+  [[ -f "$resolved" ]] || return 0
+  IFS= read -r first_line < "$resolved" || true
+  [[ "$first_line" == '#!'* ]] || return 0
+  shebang="${first_line#\#!}"
+  set -- $shebang
+  interpreter="${1:-}"
+  [[ -n "$interpreter" ]] || return 0
+  if [[ "$(basename "$interpreter")" == env ]]; then
+    shift
+    if [[ "${1:-}" == -S ]]; then shift; fi
+    command_name="${1:-}"
+    [[ -n "$command_name" ]] || return 0
+    interpreter=$(command -v "$command_name" 2>/dev/null || true)
+  fi
+  [[ -n "$interpreter" ]] || return 0
+  resolve_runtime_path "$interpreter"
+}
+
+worktree_git_metadata_paths() {
+  local worktree="$1" git_dir common_dir
+  git_dir=$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null || true)
+  common_dir=$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  if [[ -z "$common_dir" ]]; then
+    common_dir=$(git -C "$worktree" rev-parse --git-common-dir 2>/dev/null || true)
+    if [[ -n "$common_dir" && "$common_dir" != /* ]]; then
+      common_dir=$(cd "$worktree/$common_dir" 2>/dev/null && pwd -P || true)
+    fi
+  fi
+  [[ -n "$git_dir" && -d "$git_dir" ]] && printf '%s\n' "$git_dir"
+  [[ -n "$common_dir" && -d "$common_dir" && "$common_dir" != "$git_dir" ]] && printf '%s\n' "$common_dir"
 }
 
 write_macos_profile() {
   local profile="$1" worktree="$2" agent_home="$3" temp_dir="$4" allow_network="$5" provider_hosts="$6" executable="${7:-}"
+  local resolved_executable="" interpreter=""
+  if [[ -n "$executable" ]]; then
+    resolved_executable=$(resolve_runtime_path "$executable") || return 1
+    interpreter=$(runtime_interpreter_path "$executable") || return 1
+  fi
+
   cat > "$profile" <<PROFILE
 (version 1)
 (deny default)
@@ -83,20 +153,41 @@ write_macos_profile() {
 (allow file-read* (subpath "$worktree"))
 (allow file-read* (subpath "$agent_home"))
 (allow file-read* (subpath "$temp_dir"))
-(allow file-read* (subpath "$executable"))
 (allow file-write* (subpath "$worktree"))
 (allow file-write* (subpath "$agent_home"))
 (allow file-write* (subpath "$temp_dir"))
+(deny process-exec (subpath "$worktree"))
 (deny file-write* (subpath "$worktree/.git"))
-(deny file-write* (subpath "$worktree/.git/config"))
-(deny file-write* (subpath "$worktree/.git/refs"))
-(deny file-write* (subpath "$worktree/.git/hooks"))
 PROFILE
+
+  if [[ -n "$executable" ]]; then
+    printf '(allow file-read* (literal "%s"))\n' "$executable" >> "$profile"
+  fi
+  if [[ -n "$resolved_executable" && "$resolved_executable" != "$executable" ]]; then
+    printf '(allow file-read* (literal "%s"))\n' "$resolved_executable" >> "$profile"
+  fi
+  if [[ -n "$interpreter" ]]; then
+    printf '(allow file-read* (literal "%s"))\n' "$interpreter" >> "$profile"
+  fi
+
   local runtime_root
   while IFS= read -r runtime_root; do
     [[ -n "$runtime_root" ]] || continue
     printf '(allow file-read* (subpath "%s"))\n' "$runtime_root" >> "$profile"
-  done < <(agent_runtime_roots "$executable")
+  done < <(
+    {
+      agent_runtime_roots "$resolved_executable"
+      agent_runtime_roots "$interpreter"
+    } | awk '!seen[$0]++'
+  )
+
+  local git_metadata
+  while IFS= read -r git_metadata; do
+    [[ -n "$git_metadata" ]] || continue
+    printf '(allow file-read* (subpath "%s"))\n' "$git_metadata" >> "$profile"
+    printf '(deny file-write* (subpath "%s"))\n' "$git_metadata" >> "$profile"
+  done < <(worktree_git_metadata_paths "$worktree")
+
   if [[ "$allow_network" == "true" ]]; then
     local host
     for host in $provider_hosts; do
