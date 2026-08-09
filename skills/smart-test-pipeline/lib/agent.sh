@@ -115,10 +115,19 @@ changed_paths() {
 }
 
 path_is_forbidden() {
-  local path="$1"
-  [[ "$path" == .git || "$path" == .git/* || "$path" == .greploop-data/* ]] && return 0
-  [[ "$path" == .env || "$path" == .env.* || "$path" == *.pem || "$path" == *.key || "$path" == *.p12 || "$path" == *.pfx ]] && return 0
-  [[ "$path" == node_modules/* || "$path" == .venv/* || "$path" == vendor/* || "$path" == dist/* || "$path" == build/* ]] && return 0
+  local path="$1" lower basename
+  lower=$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')
+  basename="${lower##*/}"
+  [[ "$lower" == .git || "$lower" == .git/* || "$lower" == */.git || "$lower" == */.git/* || "$lower" == .greploop-data/* ]] && return 0
+  case "$basename" in
+    .env|.env.*|*.pem|*.key|*.p12|*.pfx)
+      case "$basename" in
+        .env.example|.env.*.example) ;;
+        *) return 0 ;;
+      esac
+      ;;
+  esac
+  [[ "$lower" == node_modules/* || "$lower" == .venv/* || "$lower" == vendor/* || "$lower" == dist/* || "$lower" == build/* ]] && return 0
   return 1
 }
 
