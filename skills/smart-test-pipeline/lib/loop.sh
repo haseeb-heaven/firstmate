@@ -77,10 +77,9 @@ preflight_agent() {
   }
   case "${AGENT_SANDBOX:-auto}" in
     macos) sandbox_exec_works || { echo "ERROR: macOS agent sandbox unavailable" >&2; return 1; } ;;
-    bwrap) command -v bwrap >/dev/null 2>&1 || { echo "ERROR: bwrap unavailable" >&2; return 1; } ;;
-    docker) command -v docker >/dev/null 2>&1 || { echo "ERROR: Docker unavailable" >&2; return 1; } ;;
-    auto) sandbox_exec_works || command -v bwrap >/dev/null 2>&1 || command -v docker >/dev/null 2>&1 || {
-      echo "ERROR: no disposable agent sandbox backend is available" >&2; return 1;
+    bwrap|docker) echo "ERROR: $AGENT_SANDBOX cannot provide provider-restricted agent networking" >&2; return 1 ;;
+    auto) sandbox_exec_works || {
+      echo "ERROR: no provider-aware disposable agent sandbox backend is available" >&2; return 1;
     } ;;
     *) echo "ERROR: unsupported agent sandbox mode: $AGENT_SANDBOX" >&2; return 1 ;;
   esac
@@ -127,6 +126,13 @@ run_pipeline() {
         write_iteration_report "$DATA_DIR" "$ITERATION" "$findings_file"
         write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"
         return 1
+      fi
+      if [[ "$WAIT_CI" == true && "$CI_BLOCKED" != true ]]; then
+        if wait_for_ci "$OWNER" "$REPO" "$(get_current_sha)" "$CI_TIMEOUT" "$DATA_DIR" "$ITERATION"; then
+          CI_BLOCKED=false
+        else
+          CI_BLOCKED=true
+        fi
       fi
       if [[ "$CI_BLOCKED" == true ]]; then
         PIPELINE_RESULT="ci_blocked"
@@ -191,6 +197,7 @@ run_pipeline() {
     push_changes "$PUSH_REMOTE" "$WORKTREE_DIR" "$BRANCH" "$FORCE_PUSH" || {
       PIPELINE_RESULT="push_failed"; write_final_report "$DATA_DIR" "$ITERATION" "$PIPELINE_RESULT"; return 1;
     }
+    WORKTREE_LANDED=true
     if [[ "$WAIT_CI" == true ]]; then
       if wait_for_ci "$OWNER" "$REPO" "$(get_current_sha)" "$CI_TIMEOUT" "$DATA_DIR" "$ITERATION"; then
         CI_BLOCKED=false

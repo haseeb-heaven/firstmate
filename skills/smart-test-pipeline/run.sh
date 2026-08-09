@@ -66,8 +66,8 @@ if [[ ! "$MAX_ITERATIONS" =~ ^[1-9][0-9]*$ || ! "$CI_TIMEOUT" =~ ^[1-9][0-9]*$ ]
 fi
 
 if [[ "$PR_URL" =~ ^https://github\.com/([^/]+)/([^/]+)/pull/([0-9]+)$ ]]; then
-  OWNER="${BASH_REMATCH[1]}"
-  REPO="${BASH_REMATCH[2]}"
+  OWNER="${BASH_REMATCH[1],,}"
+  REPO="${BASH_REMATCH[2],,}"
   PR_NUM="${BASH_REMATCH[3]}"
 else
   echo "ERROR: not a valid GitHub PR URL: $PR_URL" >&2
@@ -84,12 +84,21 @@ DATA_DIR="$RUN_ROOT"
 REPOSITORY_DIR="$RUN_ROOT/repository"
 LOCK_ACQUIRED=false
 WORKTREE_CLEANUP=false
+WORKTREE_LANDED=false
+
+worktree_is_clean() {
+  [[ -n "${WORKTREE_DIR:-}" && -d "$WORKTREE_DIR" ]] || return 1
+  git -C "$WORKTREE_DIR" diff --quiet &&
+    git -C "$WORKTREE_DIR" diff --cached --quiet &&
+    [[ -z "$(git -C "$WORKTREE_DIR" ls-files --others --exclude-standard)" ]]
+}
 
 cleanup() {
   local rc=$?
-  if [[ "${WORKTREE_CLEANUP:-false}" == true && "$rc" -eq 0 && -n "${WORKTREE_DIR:-}" && -d "$WORKTREE_DIR" && -d "${REPOSITORY_DIR:-}/.git" ]]; then
-    git -C "$REPOSITORY_DIR" worktree remove --force "$WORKTREE_DIR" >/dev/null 2>&1 || true
-    rm -rf "$REPOSITORY_DIR"
+  if [[ "${WORKTREE_CLEANUP:-false}" == true && "${WORKTREE_LANDED:-false}" == true && "$rc" -eq 0 && -d "${REPOSITORY_DIR:-}/.git" ]] && worktree_is_clean; then
+    if git -C "$REPOSITORY_DIR" worktree remove "$WORKTREE_DIR" >/dev/null 2>&1; then
+      rm -rf "$REPOSITORY_DIR"
+    fi
   fi
   if [[ "${LOCK_ACQUIRED:-false}" == true && -n "${LOCK_DIR:-}" && -d "$LOCK_DIR" ]]; then
     rmdir "$LOCK_DIR" >/dev/null 2>&1 || true
@@ -175,6 +184,7 @@ git clone --no-checkout "https://github.com/$REPO_FULL.git" "$clone_dir" >/dev/n
 mv "$clone_dir" "$REPOSITORY_DIR"
 git -C "$REPOSITORY_DIR" config user.name "Smart Test Pipeline"
 git -C "$REPOSITORY_DIR" config user.email "smart-test-pipeline@localhost"
+git -C "$REPOSITORY_DIR" config credential.helper '!gh auth git-credential'
 
 git -C "$REPOSITORY_DIR" fetch --no-tags origin "$BASE_BRANCH" >/dev/null
 if [[ "$HEAD_OWNER/$HEAD_REPO" != "$REPO_FULL" ]]; then

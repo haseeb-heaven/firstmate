@@ -14,6 +14,9 @@ run_tests() {
   local rc=0
   local saved_agent_env="${AGENT_ENV_ALLOWLIST-}"
   local snapshot_dir="$data_dir/iterations/$iteration/validation-worktree-tests"
+  local sandbox_home="$data_dir/iterations/$iteration/sandbox-home-tests"
+  local sandbox_tmp="$data_dir/iterations/$iteration/sandbox-tmp-tests"
+  mkdir -p "$sandbox_home" "$sandbox_tmp"
   if ! prepare_validation_snapshot "$worktree_dir" "$snapshot_dir" 2>"$output_file"; then
     printf 'Tests could not prepare a disposable snapshot.\n' >> "$output_file"
     cp "$output_file" "$failure_file"
@@ -22,7 +25,7 @@ run_tests() {
   AGENT_ENV_ALLOWLIST=""
   export AGENT_ENV_ALLOWLIST
   run_validation_command "${VALIDATION_TIMEOUT:-3600}" \
-    run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$snapshot_dir" "$data_dir/sandbox-home" "$data_dir/sandbox-tmp" \
+    run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$snapshot_dir" "$sandbox_home" "$sandbox_tmp" \
     false bash -c "$test_cmd" >"$output_file" 2>&1 || rc=$?
   AGENT_ENV_ALLOWLIST="$saved_agent_env"
   export AGENT_ENV_ALLOWLIST
@@ -44,6 +47,9 @@ run_lint() {
   local rc=0
   local saved_agent_env="${AGENT_ENV_ALLOWLIST-}"
   local snapshot_dir="$data_dir/iterations/$iteration/validation-worktree-lint"
+  local sandbox_home="$data_dir/iterations/$iteration/sandbox-home-lint"
+  local sandbox_tmp="$data_dir/iterations/$iteration/sandbox-tmp-lint"
+  mkdir -p "$sandbox_home" "$sandbox_tmp"
   if ! prepare_validation_snapshot "$worktree_dir" "$snapshot_dir" 2>"$output_file"; then
     printf 'Lint could not prepare a disposable snapshot.\n' >> "$output_file"
     cp "$output_file" "$failure_file"
@@ -52,7 +58,7 @@ run_lint() {
   AGENT_ENV_ALLOWLIST=""
   export AGENT_ENV_ALLOWLIST
   run_validation_command "${VALIDATION_TIMEOUT:-3600}" \
-    run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$snapshot_dir" "$data_dir/sandbox-home" "$data_dir/sandbox-tmp" \
+    run_sandboxed "${VALIDATION_SANDBOX:-auto}" "$snapshot_dir" "$sandbox_home" "$sandbox_tmp" \
     false bash -c "$lint_cmd" >"$output_file" 2>&1 || rc=$?
   AGENT_ENV_ALLOWLIST="$saved_agent_env"
   export AGENT_ENV_ALLOWLIST
