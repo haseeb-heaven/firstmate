@@ -375,6 +375,14 @@
     {
       "path": "skills/stow/SKILL.md",
       "audience": "public-product"
+    },
+    {
+      "path": "skills/smart-test-pipeline/SKILL.md",
+      "audience": "public-product"
+    },
+    {
+      "path": "skills/smart-test-pipeline/README.md",
+      "audience": "operator-current"
     }
   ]
 }
