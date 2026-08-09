@@ -94,7 +94,7 @@ run_validation_command() {
 }
 
 prepare_validation_snapshot() {
-  local source_dir="$1" snapshot_dir="$2" path lower_path parent target
+  local source_dir="$1" snapshot_dir="$2" path lower_path basename_lower parent target
   rm -rf "$snapshot_dir"
   mkdir -p "$snapshot_dir"
   while IFS= read -r -d '' path; do
@@ -103,19 +103,23 @@ prepare_validation_snapshot() {
       return 1
     }
     lower_path=$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')
-    case "$lower_path" in
-      .env|*.key|*.pem|*.p12|*.pfx)
-        if [[ "$path" == .env.example || "$path" == .env.*.example || "$path" == docs/*.md || "$path" == docs/**/*.md ]]; then
-          :
-        else
-          echo "ERROR: secret-like path refused in validation snapshot: $path" >&2
-          return 1
-        fi
+    basename_lower="${lower_path##*/}"
+    case "$basename_lower" in
+      .env|.env.*|*.key|*.pem|*.p12|*.pfx)
+        case "$basename_lower" in
+          .env.example|.env.*.example) ;;
+          *)
+            echo "ERROR: secret-like path refused in validation snapshot: $path" >&2
+            return 1
+            ;;
+        esac
         ;;
+    esac
+    case "$lower_path" in
       *credentials*|*credential*)
         if [[ "$path" == docs/*.md || "$path" == docs/**/*.md ]]; then :; else
-        echo "ERROR: secret-like path refused in validation snapshot: $path" >&2
-        return 1
+          echo "ERROR: secret-like path refused in validation snapshot: $path" >&2
+          return 1
         fi
         ;;
     esac
