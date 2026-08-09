@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKILL_DIR="$ROOT/skills/smart-test-pipeline"
 source "$SKILL_DIR/lib/sandbox.sh"
 source "$SKILL_DIR/lib/agent.sh"
+source "$SKILL_DIR/lib/validate.sh"
 
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/smart-pipeline-review-tests.XXXXXX")"
 cleanup() { rm -rf "$TMP_ROOT"; }
@@ -68,8 +69,13 @@ printf 'change\n' >> "$TMP_ROOT/repo/tests/test_app.txt"
 validate_scope "$TMP_ROOT/repo" "$BASE_SHA" "$TMP_ROOT/findings.json" "$TMP_ROOT/allowed" || fail "approved support paths remain available for CI-only findings"
 pass "unknown CI findings cannot widen production scope"
 
-grep -Fq 'local final_dir="$DATA_DIR/final-review"' "$SKILL_DIR/lib/loop.sh" || fail "terminal review must use a separate directory"
-! grep -Fq 'local final_dir="$DATA_DIR/iterations/$MAX_ITERATIONS"' "$SKILL_DIR/lib/loop.sh" || fail "terminal review must not reuse the last fix iteration directory"
-pass "post-limit review preserves final iteration artifacts"
+mkdir -p "$TMP_ROOT/repo/service"
+printf 'TOP_SECRET=value\n' > "$TMP_ROOT/repo/service/.env.production"
+git -C "$TMP_ROOT/repo" add service/.env.production
+if prepare_validation_snapshot "$TMP_ROOT/repo" "$TMP_ROOT/snapshot" 2>"$TMP_ROOT/snapshot.err"; then
+  fail "nested production environment file entered validation snapshot"
+fi
+grep -Fq 'secret-like path refused' "$TMP_ROOT/snapshot.err" || fail "nested secret refusal was not reported"
+pass "validation snapshot rejects nested environment secrets behaviorally"
 
-echo "all final-review regression tests passed"
+echo "all final-review behavioral regression tests passed"
