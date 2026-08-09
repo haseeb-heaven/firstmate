@@ -134,7 +134,7 @@ EOF
     if [[ -f "$iter_dir/ci-conclusions.json" ]]; then
       local passed failed
       passed=$(jq '[.[] | select(.conclusion == "success")] | length' "$iter_dir/ci-conclusions.json" 2>/dev/null || echo "?")
-      failed=$(jq '[.[] | select(.conclusion != "success" and .conclusion != "neutral" and .conclusion != "skipped")] | length' "$iter_dir/ci-conclusions.json" 2>/dev/null || echo "?")
+      failed=$(jq '[.[] | select(.conclusion != "success")] | length' "$iter_dir/ci-conclusions.json" 2>/dev/null || echo "?")
       ci="passed: $passed, failed: $failed"
     else
       ci="pending"
