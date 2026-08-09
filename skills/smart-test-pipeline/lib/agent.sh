@@ -96,9 +96,6 @@ spawn_fix_agent() {
     return 1
   }
 
-  # Raw provider keys are intentionally never copied into the agent sandbox.
-  # A trusted operator-owned broker is required to authenticate the selected
-  # agent without placing reusable credentials in its environment or children.
   local broker="${AGENT_CREDENTIAL_BROKER:-}"
   [[ "$broker" == /* && -x "$broker" ]] || {
     echo "ERROR: AGENT_CREDENTIAL_BROKER must be an absolute trusted executable" >&2
@@ -145,7 +142,7 @@ spawn_fix_agent() {
     "$@" &
     child=$!
     set +m
-    pgid=$(ps -o pgid= -p "$child" 2>/dev/null | tr -d '[:space:]')
+    pgid="$child"
     shell_pgid=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d '[:space:]')
     if [[ ! "$pgid" =~ ^[1-9][0-9]*$ || "$pgid" == "$shell_pgid" ]]; then
       kill -TERM "$child" 2>/dev/null || true
