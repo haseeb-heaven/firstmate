@@ -23,6 +23,8 @@
   --wait-ci true
 ```
 
+> **Agent platform note:** automatic fix-agent execution currently requires macOS with a working `sandbox-exec` provider-aware network boundary. Linux validation can use bubblewrap or Docker, but networked fix agents are intentionally refused there because those backends do not currently enforce provider-only egress. On Linux, use the pipeline only for dry-run/validation workflows until a provider-aware agent boundary is available.
+
 ## Configuration
 
 Copy `config.example.sh` to `config.sh` beside `run.sh`, or set `SMART_TEST_CONFIG` to a trusted operator-owned config path. CLI flags override config, and config overrides built-in defaults. Key settings:
@@ -40,8 +42,8 @@ Copy `config.example.sh` to `config.sh` beside `run.sh`, or set `SMART_TEST_CONF
 | `REVIEW_BOTS` | coderabbit greptile | Bots to trigger |
 | `TEST_CMD` | `python -m pytest --tb=short -q` | Local test command |
 | `LINT_CMD` | (empty) | Local lint command |
-| `VALIDATION_SANDBOX` | auto | Disposable backend: `macos` (`sandbox-exec`), `bwrap`, or Docker |
-| `AGENT_SANDBOX` | auto | Disposable agent backend |
+| `VALIDATION_SANDBOX` | auto | Disposable validation backend: `macos` (`sandbox-exec`), `bwrap`, or Docker |
+| `AGENT_SANDBOX` | auto | Disposable fix-agent backend; currently `auto`/`macos` require macOS `sandbox-exec` for provider-restricted networking |
 | `ALLOWED_SUPPORT_GLOBS` | test patterns | Narrow patterns for reviewed supporting files |
 
 ## Safety
