@@ -11,7 +11,7 @@ write_iteration_report() {
 
   local findings_count actionable_count
   findings_count=$(jq 'length' "$findings_file")
-  actionable_count=$(jq '[.[] | select(.severity == "high" or .severity == "medium")] | length' "$findings_file")
+  actionable_count=$(jq 'length' "$findings_file")
 
   local high medium low
   high=$(jq '[.[] | select(.severity == "high")] | length' "$findings_file")
@@ -23,7 +23,7 @@ write_iteration_report() {
 
 ## Summary
 - **Findings collected:** $findings_count
-- **Actionable (high + medium):** $actionable_count
+- **Actionable:** $actionable_count
 - **Severity breakdown:** ${RED}High: $high${NC} ${YELLOW}Medium: $medium${NC} ${DIM}Low: $low${NC}
 
 ## Findings Detail
@@ -121,7 +121,7 @@ EOF
 
     local findings actionable tests ci
     findings=$(jq 'length' "$iter_dir/findings.json" 2>/dev/null || echo "?")
-    actionable=$(jq '[.[] | select(.severity == "high" or .severity == "medium")] | length' "$iter_dir/findings.json" 2>/dev/null || echo "?")
+    actionable=$(jq 'length' "$iter_dir/findings.json" 2>/dev/null || echo "?")
 
     if [[ -f "$iter_dir/test-failures.txt" ]]; then
       tests="failed"
