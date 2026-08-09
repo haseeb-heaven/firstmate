@@ -57,7 +57,7 @@ get_greptile_score() {
 is_coderabbit_done() {
   local owner="$1" repo="$2" pr_num="$3" last_comment
   last_comment=$(gh api -H "Accept: application/vnd.github+json" "/repos/$owner/$repo/pulls/$pr_num/comments" --jq '[.[] | select(.user.login == "coderabbitai[bot]") | .body] | last // ""' 2>/dev/null)
-  if echo "$last_comment" | grep -q "All comments resolved\|No issues found\|review complete"; then echo "true"; else echo "false"; fi
+  if printf '%s\n' "$last_comment" | grep -Eiq '^[[:space:]]*(✅[[:space:]]*)?(review complete(d)?|all comments resolved|no issues found)[.![:space:]]*$'; then echo "true"; else echo "false"; fi
 }
 
 capture_review_baseline() {
@@ -68,7 +68,7 @@ capture_review_baseline() {
     case "$bot" in
       coderabbit) login="coderabbitai[bot]" ;;
       greptile) login="greptile-apps[bot]" ;;
-      *) continue ;;
+      *) echo "ERROR: unsupported review bot: $bot" >&2; return 1 ;;
     esac
     review_comments=$(gh api -H "Accept: application/vnd.github+json" "/repos/$owner/$repo/pulls/$pr_num/comments" --paginate --slurp 2>/dev/null) || return 1
     issue_comments=$(gh api -H "Accept: application/vnd.github+json" "/repos/$owner/$repo/issues/$pr_num/comments" --paginate --slurp 2>/dev/null) || return 1
@@ -76,6 +76,19 @@ capture_review_baseline() {
     issue_id=$(echo "$issue_comments" | jq --arg login "$login" '[.[][] | select(.user.login == $login) | .id] | max // 0')
     echo "$bot $review_id $issue_id" >> "$baseline_file"
   done
+}
+
+review_bot_has_terminal_message() {
+  local bot="$1"
+  case "$bot" in
+    coderabbit)
+      grep -Eiq '^[[:space:]]*(✅[[:space:]]*)?(review complete(d)?|all comments resolved|no issues found)[.![:space:]]*$'
+      ;;
+    greptile)
+      grep -Eiq '^[[:space:]]*(✅[[:space:]]*)?(review complete(d)?|no issues found|no findings|lgtm)[.![:space:]]*$'
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 is_review_bot_done() {
@@ -92,7 +105,7 @@ is_review_bot_done() {
   issue_comments=$(gh api -H "Accept: application/vnd.github+json" "/repos/$owner/$repo/issues/$pr_num/comments" --paginate --slurp 2>/dev/null) || return 1
   review_bodies=$(echo "$review_comments" | jq -r --arg login "$login" --argjson baseline "$review_baseline" '[.[][] | select(.user.login == $login and .id > $baseline) | .body] | .[]')
   issue_bodies=$(echo "$issue_comments" | jq -r --arg login "$login" --argjson baseline "$issue_baseline" '[.[][] | select(.user.login == $login and .id > $baseline) | .body] | .[]')
-  printf '%s\n%s\n' "$review_bodies" "$issue_bodies" | grep -Eiq "all comments resolved|no issues found|review complete|no findings|lgtm"
+  printf '%s\n%s\n' "$review_bodies" "$issue_bodies" | review_bot_has_terminal_message "$bot"
 }
 
 count_actionable() { local findings="$1"; echo "$findings" | jq 'length'; }
