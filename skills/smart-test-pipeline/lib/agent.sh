@@ -65,9 +65,8 @@ spawn_fix_agent() {
   command -v "$agent" >/dev/null 2>&1 || { echo "ERROR: '$agent' is not installed" >&2; return 1; }
   AGENT_EXECUTABLE="$(command -v "$agent")"
   export AGENT_EXECUTABLE
-  AGENT_ENV_ALLOWLIST="$(agent_provider_env "$agent")"
-  [[ "$(wc -w <<<"$AGENT_ENV_ALLOWLIST")" -eq 0 ]] || {
-    echo "ERROR: provider credentials may not be passed to fix agents" >&2
+  AGENT_ENV_ALLOWLIST="$(agent_provider_env "$agent")" || {
+    echo "ERROR: unsupported provider environment for '$agent'" >&2
     return 1
   }
   AGENT_PROVIDER_HOSTS="$(agent_provider_hosts "$agent")"
@@ -149,8 +148,6 @@ validate_scope() {
     fi
     allowed=false
     if jq -e --arg path "$path" '[.[] | select(.path == $path)] | length > 0' "$findings_file" >/dev/null; then
-      allowed=true
-    elif jq -e '[.[] | select(.source == "github-ci" and (.path == "unknown" or .path == null))] | length > 0' "$findings_file" >/dev/null; then
       allowed=true
     elif path_is_allowed_support "$path" && jq -e 'length > 0' "$findings_file" >/dev/null; then
       allowed=true
