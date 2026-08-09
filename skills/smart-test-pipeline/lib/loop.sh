@@ -330,8 +330,7 @@ run_pipeline() {
   return 1
 }
 
-# Load the audited edge-case overrides only after every core function above has
-# been defined, so the hardening layer cannot be accidentally overwritten by a
-# later sourced library.
+# Load audited overrides only after every core function above is defined.
 source "$LOOP_LIB_DIR/review-hardening.sh"
+source "$LOOP_LIB_DIR/final-hardening.sh"
 run_pipeline
