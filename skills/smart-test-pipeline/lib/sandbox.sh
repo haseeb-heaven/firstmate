@@ -15,8 +15,13 @@ copy_allowed_env() {
 }
 
 agent_provider_env() {
-  # Provider secrets must never enter an agent-controlled subprocess.
-  printf '%s' ""
+  case "$1" in
+    pi) printf '%s' "${PI_PROVIDER_ENV:-ANTHROPIC_API_KEY}" ;;
+    claude) printf '%s' "${CLAUDE_PROVIDER_ENV:-ANTHROPIC_API_KEY}" ;;
+    codex) printf '%s' "${CODEX_PROVIDER_ENV:-OPENAI_API_KEY}" ;;
+    opencode) printf '%s' "${OPENCODE_PROVIDER_ENV:-OPENAI_API_KEY}" ;;
+    *) return 1 ;;
+  esac
 }
 
 agent_provider_hosts() {
@@ -32,6 +37,40 @@ agent_provider_hosts() {
 sandbox_exec_works() {
   command -v sandbox-exec >/dev/null 2>&1 || return 1
   sandbox-exec -p '(version 1) (deny default) (allow process*)' true >/dev/null 2>&1
+}
+
+resolve_runtime_path() {
+  local path="$1" target dir hops=0
+  [[ -n "$path" ]] || return 0
+  while [[ -L "$path" ]]; do
+    (( hops += 1 ))
+    (( hops <= 40 )) || { echo "ERROR: executable symlink chain is too deep: $1" >&2; return 1; }
+    target=$(readlink "$path") || return 1
+    if [[ "$target" == /* ]]; then
+      path="$target"
+    else
+      dir=$(cd "$(dirname "$path")" && pwd -P)
+      path="$dir/$target"
+    fi
+  done
+  if [[ -e "$path" ]]; then
+    dir=$(cd "$(dirname "$path")" && pwd -P)
+    printf '%s/%s\n' "$dir" "$(basename "$path")"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
+agent_runtime_roots() {
+  local executable="$1" resolved launcher_dir resolved_dir root
+  [[ -n "$executable" ]] || return 0
+  resolved=$(resolve_runtime_path "$executable") || return 1
+  launcher_dir=$(cd "$(dirname "$executable")" && pwd -P)
+  resolved_dir=$(cd "$(dirname "$resolved")" && pwd -P)
+  for root in "$launcher_dir" "$(dirname "$launcher_dir")" "$resolved_dir" "$(dirname "$resolved_dir")"; do
+    [[ -n "$root" && "$root" != / ]] || continue
+    printf '%s\n' "$root"
+  done | awk '!seen[$0]++'
 }
 
 write_macos_profile() {
@@ -53,6 +92,11 @@ write_macos_profile() {
 (deny file-write* (subpath "$worktree/.git/refs"))
 (deny file-write* (subpath "$worktree/.git/hooks"))
 PROFILE
+  local runtime_root
+  while IFS= read -r runtime_root; do
+    [[ -n "$runtime_root" ]] || continue
+    printf '(allow file-read* (subpath "%s"))\n' "$runtime_root" >> "$profile"
+  done < <(agent_runtime_roots "$executable")
   if [[ "$allow_network" == "true" ]]; then
     local host
     for host in $provider_hosts; do
@@ -118,7 +162,7 @@ _run_sandboxed_impl() {
       [[ -n "$image" ]] || { echo "ERROR: SANDBOX_IMAGE must name a compatible image containing bash and the requested command" >&2; return 125; }
       local network_arg=--network=none
       [[ "$allow_network" != "true" ]] || { echo "ERROR: Docker cannot enforce provider-only egress; refusing networked agent" >&2; return 125; }
-      local -a docker_env=()
+      local -a docker_env=(--env "HOME=$home_dir" --env "TMPDIR=$temp_dir")
       while IFS= read -r -d '' item; do docker_env+=(--env "$item"); done < <(copy_allowed_env "${AGENT_ENV_ALLOWLIST:-}")
       local -a git_mount=()
       [[ -e "$worktree/.git" ]] && git_mount+=(--mount "type=bind,src=$worktree/.git,dst=$worktree/.git,readonly")
